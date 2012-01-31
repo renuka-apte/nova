@@ -87,19 +87,20 @@ class ComputeAPI(nova.openstack.common.rpc.proxy.RpcProxy):
                 mountpoint=mountpoint),
                 topic=_compute_topic(self.topic, ctxt, None, instance))
 
-    def check_shared_storage_test_file(self, ctxt, filename, host):
-        return self.call(ctxt, self.make_msg('check_shared_storage_test_file',
-                filename=filename),
-                topic=_compute_topic(self.topic, ctxt, host, None))
+    def check_can_live_migrate_destination(self, ctxt, instance, destination,
+            block_migration, disk_over_commit):
+        self.call(ctxt, self.make_msg('check_can_live_migrate_destination',
+                           instance_id=instance['id'],
+                           destination=destination,
+                           block_migration=block_migration,
+                           disk_over_commit=disk_over_commit),
+                  topic=_compute_topic(self.topic, ctxt, None, instance))
 
-    def cleanup_shared_storage_test_file(self, ctxt, filename, host):
-        self.cast(ctxt, self.make_msg('cleanup_shared_storage_test_file',
-                filename=filename),
-                topic=_compute_topic(self.topic, ctxt, host, None))
-
-    def compare_cpu(self, ctxt, cpu_info, host):
-        return self.call(ctxt, self.make_msg('compare_cpu', cpu_info=cpu_info),
-                topic=_compute_topic(self.topic, ctxt, host, None))
+    def check_can_live_migrate_source(self, ctxt, dest_check_data, instance):
+        self.call(ctxt, self.make_msg('check_can_live_migrate_source',
+                           instance_id=instance['id'],
+                           dest_check_data=dest_check_data),
+                  topic=_compute_topic(self.topic, ctxt, None, instance))
 
     def confirm_resize(self, ctxt, instance, migration_id, host,
             cast=True):
@@ -107,11 +108,6 @@ class ComputeAPI(nova.openstack.common.rpc.proxy.RpcProxy):
         return rpc_method(ctxt, self.make_msg('confirm_resize',
                 instance_uuid=instance['uuid'], migration_id=migration_id),
                 topic=_compute_topic(self.topic, ctxt, host, instance))
-
-    def create_shared_storage_test_file(self, ctxt, host):
-        return self.call(ctxt,
-                self.make_msg('create_shared_storage_test_file'),
-                topic=_compute_topic(self.topic, ctxt, host, None))
 
     def detach_volume(self, ctxt, instance, volume_id):
         self.cast(ctxt, self.make_msg('detach_volume',
