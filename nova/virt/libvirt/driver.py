@@ -56,6 +56,8 @@ from xml.dom import minidom
 from nova import block_device
 from nova.compute import instance_types
 from nova.compute import power_state
+from nova.compute import rpcapi as compute_rpcapi
+from nova.compute import utils as compute_utils
 from nova import context as nova_context
 from nova import db
 from nova import exception
@@ -293,6 +295,8 @@ class LibvirtDriver(driver.ComputeDriver):
         self._disk_cachemode = None
         self.image_cache_manager = imagecache.ImageCacheManager()
         self.image_backend = imagebackend.Backend(FLAGS.use_cow_images)
+
+        self.compute_rpcapi = compute_rpcapi.ComputeAPI()
 
     @property
     def disk_cachemode(self):
@@ -2193,6 +2197,153 @@ class LibvirtDriver(driver.ComputeDriver):
             LOG.info(_('Compute_service record updated for %s ') % host)
             db.compute_node_update(ctxt, compute_node_ref[0]['id'], dic)
 
+    def check_can_live_migrate(self, ctxt, instance_ref, dest,
+                               block_migration=False,
+                               disk_over_commit=False):
+        """Check if it is possible to execute live migration.
+
+        :param context: security context
+        :param instance_ref: nova.db.sqlalchemy.models.Instance object
+        :param dest: destination host
+        :param block_migration: if true, prepare for block migration
+        :param disk_over_commit: if true, allow disk over commit
+
+        """
+        # Checking dst host has enough capacities.
+        if block_migration:
+            self._assert_compute_node_has_enough_disk(ctxt,
+                                                     instance_ref, dest,
+                                                     disk_over_commit)
+        # check if the storage is shared
+        self._live_migration_storage_check(ctxt, instance_ref, dest,
+                                           block_migration)
+
+        # Check the CPU compatibility
+        self._check_cpu_match(ctxt, instance_ref, dest)
+
+    def _get_compute_info(self, context, host):
+        """get compute node's information specified by key
+
+        :param context: security context
+        :param host: hostname(must be compute node)
+        :param key: column name of compute_nodes
+        :return: value specified by key
+
+        """
+        compute_node_ref = db.service_get_all_compute_by_host(context, host)
+        return compute_node_ref[0]['compute_node'][0]
+
+    def _assert_compute_node_has_enough_disk(self, context, instance_ref, dest,
+                                            disk_over_commit):
+        """Checks if destination host has enough disk for block migration.
+
+        :param context: security context
+        :param instance_ref: nova.db.sqlalchemy.models.Instance object
+        :param dest: destination host
+        :param disk_over_commit: if True, consider real(not virtual)
+                                 disk size.
+
+        """
+
+        # Libvirt supports qcow2 disk format,which is usually compressed
+        # on compute nodes.
+        # Real disk image (compressed) may enlarged to "virtual disk size",
+        # that is specified as the maximum disk size.
+        # (See qemu-img -f path-to-disk)
+        # Scheduler recognizes destination host still has enough disk space
+        # if real disk size < available disk size
+        # if disk_over_commit is True,
+        #  otherwise virtual disk size < available disk size.
+
+        # Getting total available disk of host
+        available_gb = self._get_compute_info(context,
+                                              dest)['disk_available_least']
+        available = available_gb * (1024 ** 3)
+
+        ret = self.get_instance_disk_info(instance_ref['name'])
+        disk_infos = jsonutils.loads(ret)
+
+        necessary = 0
+        if disk_over_commit:
+            for info in disk_infos:
+                necessary += int(info['disk_size'])
+        else:
+            for info in disk_infos:
+                necessary += int(info['virt_disk_size'])
+
+        # Check that available disk > necessary disk
+        if (available - necessary) < 0:
+            instance_uuid = instance_ref['uuid']
+            reason = _("Unable to migrate %(instance_uuid)s to %(dest)s: "
+                       "Lack of disk(host:%(available)s "
+                       "<= instance:%(necessary)s)")
+            raise exception.MigrationError(reason=reason % locals())
+
+    def _check_cpu_match(self, context, instance_ref, dest):
+        src = instance_ref['host']
+        oservice_ref = self._get_compute_info(context, src)
+
+        # Checking cpuinfo.
+        try:
+            self.compute_rpcapi.compare_cpu(context,
+                                            oservice_ref['cpu_info'], dest)
+        except exception.InvalidCPUInfo:
+            src = instance_ref['host']
+            LOG.exception(_("host %(dest)s is not compatible with "
+                            "original host %(src)s.") % locals())
+            raise
+
+    def _live_migration_storage_check(self, context, instance_ref, dest,
+                                      block_migration):
+        """Live migration common storage check.
+
+        :param context: security context
+        :param instance_ref: nova.db.sqlalchemy.models.Instance object
+        :param dest: destination host
+        :param block_migration: if true, block_migration.
+        """
+        # Checking shared storage connectivity
+        # if block migration, instances_paths should not be on shared storage.
+        shared = self._mounted_on_same_shared_storage(context, instance_ref,
+                                                     dest)
+        if block_migration:
+            if shared:
+                reason = _("Block migration can not be used "
+                           "with shared storage.")
+                raise exception.InvalidSharedStorage(reason=reason, path=dest)
+
+        elif not shared:
+            reason = _("Live migration can not be used "
+                       "without shared storage.")
+            raise exception.InvalidSharedStorage(reason=reason, path=dest)
+
+    def _mounted_on_same_shared_storage(self, context, instance_ref, dest):
+        """Check if the src and dest host mount same shared storage.
+
+        At first, dest host creates temp file, and src host can see
+        it if they mounts same shared storage. Then src host erase it.
+
+        :param context: security context
+        :param instance_ref: nova.db.sqlalchemy.models.Instance object
+        :param dest: destination host
+
+        """
+
+        src = instance_ref['host']
+
+        # TODO(johngarbutt) - can the two calls not become local calls
+        # then do RPC for just the check?
+        filename = self.compute_rpcapi.\
+                    create_shared_storage_test_file(context, dest)
+        try:
+            ret = self.compute_rpcapi.\
+                    check_shared_storage_test_file(context, filename, src)
+        finally:
+            self.compute_rpcapi.\
+                    cleanup_shared_storage_test_file(context, filename, dest)
+
+        return ret
+
     def compare_cpu(self, cpu_info):
         """Checks the host cpu is compatible to a cpu given by xml.
 
@@ -2354,14 +2505,9 @@ class LibvirtDriver(driver.ComputeDriver):
         timer.f = wait_for_live_migration
         return timer.start(interval=0.5).wait()
 
-    def pre_live_migration(self, block_device_info):
-        """Preparation live migration.
-
-        :params block_device_info:
-            It must be the result of _get_instance_volume_bdms()
-            at compute manager.
-        """
-
+    def pre_live_migration(self, context, instance_ref, block_device_info,
+                           network_info):
+        """Preparation live migration."""
         # Establishing connection to volume server.
         block_device_mapping = driver.block_device_info_get_mapping(
             block_device_info)
@@ -2371,6 +2517,24 @@ class LibvirtDriver(driver.ComputeDriver):
             self.volume_driver_method('connect_volume',
                                       connection_info,
                                       mount_device)
+
+        # We call plug_vifs before the compute manager calls
+        # ensure_filtering_rules_for_instance, to ensure bridge is set up
+        # Retry operation is necessary because continuously request comes,
+        # concorrent request occurs to iptables, then it complains.
+        max_retry = FLAGS.live_migration_retry_count
+        for cnt in range(max_retry):
+            try:
+                self.plug_vifs(instance_ref, network_info)
+                break
+            except exception.ProcessExecutionError:
+                if cnt == max_retry - 1:
+                    raise
+                else:
+                    LOG.warn(_("plug_vifs() failed %(cnt)d."
+                               "Retry up to %(max_retry)d for %(hostname)s.")
+                               % locals())
+                    time.sleep(1)
 
     def pre_block_migration(self, ctxt, instance_ref, disk_info_json):
         """Preparation block migration.

@@ -283,7 +283,8 @@ class FakeDriver(driver.ComputeDriver):
     def confirm_migration(self, migration, instance, network_info):
         return
 
-    def pre_live_migration(self, block_device_info):
+    def pre_live_migration(self, context, instance_ref, block_device_info,
+                           network_info):
         """This method is supported only by libvirt."""
         return
 

@@ -357,27 +357,30 @@ class ComputeDriver(object):
         :param host: hostname that compute manager is currently running
 
         """
-        # TODO(Vek): Need to pass context in for access to auth_token
         raise NotImplementedError()
 
     def live_migration(self, ctxt, instance_ref, dest,
-                       post_method, recover_method):
-        """Spawning live_migration operation for distributing high-load.
+                       post_method, recover_method, block_migration=False):
+        """Live migration of an instance to another host.
 
-        :param ctxt: security context
-        :param instance_ref:
+        :params ctxt: security context
+        :params instance_ref:
             nova.db.sqlalchemy.models.Instance object
             instance object that is migrated.
-        :param dest: destination host
-        :param post_method:
+        :params dest: destination host
+        :params post_method:
             post operation method.
             expected nova.compute.manager.post_live_migration.
-        :param recover_method:
+        :params recover_method:
             recovery method when any exception occurs.
             expected nova.compute.manager.recover_live_migration.
-
+        :params block_migration: if true, migrate VM disk.
         """
-        # TODO(Vek): Need to pass context in for access to auth_token
+        raise NotImplementedError()
+
+    def check_can_live_migrate(self, ctxt, instance_ref, dest,
+                               block_migration=False,
+                               disk_over_commit=False):
         raise NotImplementedError()
 
     def refresh_security_group_rules(self, security_group_id):

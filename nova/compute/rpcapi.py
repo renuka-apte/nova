@@ -87,6 +87,15 @@ class ComputeAPI(nova.openstack.common.rpc.proxy.RpcProxy):
                 mountpoint=mountpoint),
                 topic=_compute_topic(self.topic, ctxt, None, instance))
 
+    def check_can_live_migrate(self, ctxt, instance, destination,
+                               block_migration, disk_over_commit):
+        self.call(ctxt, self.make_msg('check_can_live_migrate',
+                           instance_id=instance['id'],
+                           destination=destination,
+                           block_migration=block_migration,
+                           disk_over_commit=disk_over_commit),
+                  topic=_compute_topic(self.topic, ctxt, None, instance))
+
     def check_shared_storage_test_file(self, ctxt, filename, host):
         return self.call(ctxt, self.make_msg('check_shared_storage_test_file',
                 filename=filename),
@@ -197,7 +206,8 @@ class ComputeAPI(nova.openstack.common.rpc.proxy.RpcProxy):
             block_migration, host):
         return self.call(ctxt,
                 self.make_msg('post_live_migration_at_destination',
-                instance_id=instance['id'], block_migration=block_migration),
+                instance_id=instance['id'],
+                block_migration=block_migration),
                 _compute_topic(self.topic, ctxt, host, None))
 
     def pause_instance(self, ctxt, instance):
@@ -218,7 +228,8 @@ class ComputeAPI(nova.openstack.common.rpc.proxy.RpcProxy):
     def pre_live_migration(self, ctxt, instance, block_migration, disk,
             host):
         return self.call(ctxt, self.make_msg('pre_live_migration',
-                instance_id=instance['id'], block_migration=block_migration,
+                instance_id=instance['id'],
+                block_migration=block_migration,
                 disk=disk), _compute_topic(self.topic, ctxt, host, None))
 
     def reboot_instance(self, ctxt, instance, reboot_type):
@@ -301,8 +312,8 @@ class ComputeAPI(nova.openstack.common.rpc.proxy.RpcProxy):
 
     def rollback_live_migration_at_destination(self, ctxt, instance, host):
         self.cast(ctxt, self.make_msg('rollback_live_migration_at_destination',
-            instance_id=instance['id']),
-            topic=_compute_topic(self.topic, ctxt, host, None))
+                instance_id=instance['id']),
+                topic=_compute_topic(self.topic, ctxt, host, None))
 
     def set_admin_password(self, ctxt, instance, new_pass):
         self.cast(ctxt, self.make_msg('set_admin_password',

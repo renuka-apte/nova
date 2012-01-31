@@ -29,6 +29,8 @@ from xml.dom import minidom
 from nova.api.ec2 import cloud
 from nova.compute import instance_types
 from nova.compute import power_state
+from nova.compute import rpcapi as compute_rpcapi
+from nova.compute import utils as compute_utils
 from nova.compute import vm_states
 from nova import context
 from nova import db
@@ -1445,6 +1447,182 @@ class LibvirtConnTestCase(test.TestCase):
 
         db.instance_destroy(self.context, instance_ref['uuid'])
 
+    def test_check_can_live_migrate_all_pass_with_block_migration(self):
+        instance_ref = db.instance_create(self.context, self.test_instance)
+        dest = "fake_host_2"
+        src = instance_ref['host']
+        conn = libvirt_driver.LibvirtDriver(False)
+
+        self.mox.StubOutWithMock(conn, '_get_compute_info')
+        self.mox.StubOutWithMock(conn, 'get_instance_disk_info')
+        self.mox.StubOutWithMock(conn.compute_rpcapi,
+                                 'create_shared_storage_test_file')
+        self.mox.StubOutWithMock(conn.compute_rpcapi,
+                                 'check_shared_storage_test_file')
+        self.mox.StubOutWithMock(conn.compute_rpcapi,
+                                 'cleanup_shared_storage_test_file')
+        self.mox.StubOutWithMock(conn.compute_rpcapi,
+                                 'compare_cpu')
+
+        conn._get_compute_info(self.context, "fake_host_2").AndReturn(
+                                              {'disk_available_least': 400})
+        conn.get_instance_disk_info(instance_ref["name"]).AndReturn(
+                                            '[{"virt_disk_size":2}]')
+        # mounted_on_same_shared_storage
+        filename = "file"
+        conn.compute_rpcapi.create_shared_storage_test_file(
+                                self.context, dest).AndReturn(filename)
+        conn.compute_rpcapi.check_shared_storage_test_file(
+                                self.context, filename, src).AndReturn(False)
+        conn.compute_rpcapi.cleanup_shared_storage_test_file(
+                                self.context, filename, dest)
+
+        # _check_cpu_match
+        conn._get_compute_info(self.context,
+                               src).AndReturn({'cpu_info': "asdf"})
+        conn.compute_rpcapi.compare_cpu(self.context, "asdf", dest)
+
+        self.mox.ReplayAll()
+        conn.check_can_live_migrate(self.context, instance_ref, dest,
+                                    True, False)
+
+    def test_check_can_live_migrate_fail_space_with_block_migration(self):
+        instance_ref = db.instance_create(self.context, self.test_instance)
+        dest = "fake_host_2"
+        src = instance_ref['host']
+        conn = libvirt_driver.LibvirtDriver(False)
+
+        self.mox.StubOutWithMock(conn, '_get_compute_info')
+        self.mox.StubOutWithMock(conn, 'get_instance_disk_info')
+
+        conn._get_compute_info(self.context, "fake_host_2").AndReturn(
+                                              {'disk_available_least': 0})
+        conn.get_instance_disk_info(instance_ref["name"]).AndReturn(
+                                            '[{"virt_disk_size":2}]')
+
+        self.mox.ReplayAll()
+        self.assertRaises(exception.MigrationError,
+                          conn.check_can_live_migrate,
+                          self.context, instance_ref, dest, True, False)
+
+    def test_check_can_live_migrate_fail_shared_storage_with_block_mig(self):
+        instance_ref = db.instance_create(self.context, self.test_instance)
+        dest = "fake_host_2"
+        src = instance_ref['host']
+        conn = libvirt_driver.LibvirtDriver(False)
+
+        self.mox.StubOutWithMock(conn, '_get_compute_info')
+        self.mox.StubOutWithMock(conn, 'get_instance_disk_info')
+        self.mox.StubOutWithMock(conn.compute_rpcapi,
+                                 'create_shared_storage_test_file')
+        self.mox.StubOutWithMock(conn.compute_rpcapi,
+                                 'check_shared_storage_test_file')
+        self.mox.StubOutWithMock(conn.compute_rpcapi,
+                                 'cleanup_shared_storage_test_file')
+
+        conn._get_compute_info(self.context, "fake_host_2").AndReturn(
+                                              {'disk_available_least': 400})
+        conn.get_instance_disk_info(instance_ref["name"]).AndReturn(
+                                            '[{"virt_disk_size":2}]')
+        # mounted_on_same_shared_storage
+        filename = "file"
+        conn.compute_rpcapi.create_shared_storage_test_file(
+                                self.context, dest).AndReturn(filename)
+        conn.compute_rpcapi.check_shared_storage_test_file(
+                                self.context, filename, src).AndReturn(True)
+        conn.compute_rpcapi.cleanup_shared_storage_test_file(
+                                self.context, filename, dest)
+
+        self.mox.ReplayAll()
+        self.assertRaises(exception.InvalidSharedStorage,
+                          conn.check_can_live_migrate,
+                              self.context, instance_ref, dest, True, False)
+
+    def test_check_can_live_migrate_all_pass_no_block_migration(self):
+        instance_ref = db.instance_create(self.context, self.test_instance)
+        dest = "fake_host_2"
+        src = instance_ref['host']
+        conn = libvirt_driver.LibvirtDriver(False)
+
+        self.mox.StubOutWithMock(conn.compute_rpcapi,
+                                 'create_shared_storage_test_file')
+        self.mox.StubOutWithMock(conn.compute_rpcapi,
+                                 'check_shared_storage_test_file')
+        self.mox.StubOutWithMock(conn.compute_rpcapi,
+                                 'cleanup_shared_storage_test_file')
+        self.mox.StubOutWithMock(conn, '_get_compute_info')
+        self.mox.StubOutWithMock(conn.compute_rpcapi,
+                                 'compare_cpu')
+
+        # mounted_on_same_shared_storage
+        filename = "file"
+        conn.compute_rpcapi.create_shared_storage_test_file(
+                                self.context, dest).AndReturn(filename)
+        conn.compute_rpcapi.check_shared_storage_test_file(self.context,
+                                filename, src).AndReturn(True)
+        conn.compute_rpcapi.cleanup_shared_storage_test_file(
+                                self.context, filename, dest)
+
+        # _check_cpu_match
+        conn._get_compute_info(self.context,
+                               src).AndReturn({'cpu_info': "asdf"})
+        conn.compute_rpcapi.compare_cpu(self.context, "asdf", dest)
+
+        self.mox.ReplayAll()
+        conn.check_can_live_migrate(self.context, instance_ref, dest,
+                                    False, False)
+
+    def test_check_can_live_migrate_no_shared_storage_no_blck_mig_raises(self):
+        instance_ref = db.instance_create(self.context, self.test_instance)
+        dest = "fake_host_2"
+        src = instance_ref['host']
+        conn = libvirt_driver.LibvirtDriver(False)
+
+        self.mox.StubOutWithMock(conn.compute_rpcapi,
+                                 'create_shared_storage_test_file')
+        self.mox.StubOutWithMock(conn.compute_rpcapi,
+                                 'check_shared_storage_test_file')
+        self.mox.StubOutWithMock(conn.compute_rpcapi,
+                                 'cleanup_shared_storage_test_file')
+
+        # mounted_on_same_shared_storage
+        filename = "file"
+        conn.compute_rpcapi.create_shared_storage_test_file(
+                                self.context, dest).AndReturn(filename)
+        conn.compute_rpcapi.check_shared_storage_test_file(
+                                self.context, filename, src).AndReturn(False)
+        conn.compute_rpcapi.cleanup_shared_storage_test_file(
+                                self.context, filename, dest)
+
+        self.mox.ReplayAll()
+        self.assertRaises(exception.InvalidSharedStorage,
+                          conn.check_can_live_migrate,
+                              self.context, instance_ref, dest, False, False)
+
+    def test_check_can_live_migrate_incompatible_cpu_raises(self):
+        instance_ref = db.instance_create(self.context, self.test_instance)
+        dest = "fake_host_2"
+        src = instance_ref['host']
+        conn = libvirt_driver.LibvirtDriver(False)
+
+        self.mox.StubOutWithMock(conn, '_live_migration_storage_check')
+        self.mox.StubOutWithMock(conn, '_get_compute_info')
+        self.mox.StubOutWithMock(conn.compute_rpcapi,
+                                 'compare_cpu')
+
+        conn._live_migration_storage_check(self.context, instance_ref,
+                                           dest, False)
+
+        conn._get_compute_info(self.context,
+                               src).AndReturn({'cpu_info': "asdf"})
+        conn.compute_rpcapi.compare_cpu(self.context, "asdf", dest).\
+                                            AndRaise(exception.InvalidCPUInfo)
+
+        self.mox.ReplayAll()
+        self.assertRaises(exception.InvalidCPUInfo,
+                          conn.check_can_live_migrate,
+                              self.context, instance_ref, dest, False, False)
+
     @test.skip_if(missing_libvirt(), "Test requires libvirt")
     def test_live_migration_raises_exception(self):
         """Confirms recover method is called when exceptions are raised."""
@@ -1498,13 +1676,21 @@ class LibvirtConnTestCase(test.TestCase):
         db.volume_destroy(self.context, volume_ref['id'])
         db.instance_destroy(self.context, instance_ref['uuid'])
 
-    def test_pre_live_migration_works_correctly(self):
+    def test_pre_live_migration_works_correctly_mocked(self):
         """Confirms pre_block_migration works correctly."""
         # Creating testdata
         vol = {'block_device_mapping': [
                   {'connection_info': 'dummy', 'mount_device': '/dev/sda'},
                   {'connection_info': 'dummy', 'mount_device': '/dev/sdb'}]}
         conn = libvirt_driver.LibvirtDriver(False)
+
+        class FakeNetworkInfo():
+            def fixed_ips(self):
+                return ["test_ip_addr"]
+
+        inst_ref = {'id': 'foo'}
+        c = context.get_admin_context()
+        nw_info = FakeNetworkInfo()
 
         # Creating mocks
         self.mox.StubOutWithMock(driver, "block_device_info_get_mapping")
@@ -1515,10 +1701,12 @@ class LibvirtConnTestCase(test.TestCase):
             conn.volume_driver_method('connect_volume',
                                      v['connection_info'],
                                       v['mount_device'].rpartition("/")[2])
+        self.mox.StubOutWithMock(conn, 'plug_vifs')
+        conn.plug_vifs(mox.IsA(inst_ref), nw_info)
 
-        # Starting test
         self.mox.ReplayAll()
-        self.assertEqual(conn.pre_live_migration(vol), None)
+        result = conn.pre_live_migration(c, inst_ref, vol, nw_info)
+        self.assertEqual(result, None)
 
     @test.skip_if(missing_libvirt(), "Test requires libvirt")
     def test_pre_block_migration_works_correctly(self):
