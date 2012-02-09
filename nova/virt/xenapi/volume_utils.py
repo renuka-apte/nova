@@ -321,6 +321,7 @@ class VolumeHelper(HelperBase):
         target_host = _get_target_host(target_portal)
         target_port = _get_target_port(target_portal)
         target_iqn = data['target_iqn']
+        target_lun = data.get('target_lun', 0)
         LOG.debug('(vol_id,number,host,port,iqn): (%s,%s,%s,%s)',
                   volume_id, target_host, target_port, target_iqn)
         if (device_number < 0 or
@@ -334,6 +335,7 @@ class VolumeHelper(HelperBase):
         volume_info['target'] = target_host
         volume_info['port'] = target_port
         volume_info['targetIQN'] = target_iqn
+        volume_info['LUNid'] = target_lun
         if ('auth_method' in connection_info and
             connection_info['auth_method'] == 'CHAP'):
             volume_info['chapuser'] = connection_info['auth_username']
