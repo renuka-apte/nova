@@ -161,13 +161,16 @@ class VolumeOps(object):
 
         if 'vdi_uuid' in data:
             vdi_uuid = data['vdi_uuid']
+        elif 'target_lun' in data:
+            target_lun = data.get('target_lun', 0)
         else:
             vdi_uuid = None
 
         # Introduce VDI  and attach VBD to VM
         try:
             vdi_ref = VolumeHelper.introduce_vdi(self._session, sr_ref,
-                                                 vdi_uuid)
+                                                 vdi_uuid,
+                                                 target_lun)
         except StorageError, exc:
             LOG.exception(exc)
             self.forget_sr(uuid)
