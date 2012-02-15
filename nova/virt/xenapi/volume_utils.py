@@ -248,7 +248,7 @@ class VolumeHelper(HelperBase):
                     curr_rec = session.call_xenapi("VDI.get_record", curr_ref)
                     if 'sm_config' in curr_rec and \
                        'LUNid' in curr_rec['sm_config'] and \
-                       curr_rec['sm_config']['LUNid'] == target_lun:
+                       curr_rec['sm_config']['LUNid'] == str(target_lun):
                            vdi_ref = curr_ref
                            break
             else:

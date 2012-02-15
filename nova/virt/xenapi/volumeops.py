@@ -159,6 +159,8 @@ class VolumeOps(object):
             LOG.exception(exc)
             raise StorageError(_('Unable to introduce Storage Repository'))
 
+        vdi_uuid = None
+        target_lun = None
         if 'vdi_uuid' in data:
             vdi_uuid = data['vdi_uuid']
         elif 'target_lun' in data:
