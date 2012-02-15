@@ -235,13 +235,22 @@ class VolumeHelper(HelperBase):
                         ' PBD %(pbd)s') % locals())
 
     @classmethod
-    def introduce_vdi(cls, session, sr_ref, vdi_uuid=None):
+    def introduce_vdi(cls, session, sr_ref, vdi_uuid=None, target_lun=None):
         """Introduce VDI in the host"""
         try:
             session.call_xenapi("SR.scan", sr_ref)
             if vdi_uuid:
                 LOG.debug("vdi_uuid: %s" % vdi_uuid)
                 vdi_ref = session.call_xenapi("VDI.get_by_uuid", vdi_uuid)
+            elif target_lun:
+                vdi_refs = session.call_xenapi("SR.get_VDIs", sr_ref)
+                for curr_ref in vdi_refs:
+                    curr_rec = session.call_xenapi("VDI.get_record", curr_ref)
+                    if 'sm_config' in curr_rec and \
+                       'LUNid' in curr_rec['sm_config'] and \
+                       curr_rec['sm_config']['LUNid'] == target_lun:
+                           vdi_ref = curr_ref
+                           break
             else:
                 vdi_ref = (session.call_xenapi("SR.get_VDIs", sr_ref))[0]
         except cls.XenAPI.Failure, exc:
@@ -321,7 +330,6 @@ class VolumeHelper(HelperBase):
         target_host = _get_target_host(target_portal)
         target_port = _get_target_port(target_portal)
         target_iqn = data['target_iqn']
-        target_lun = data.get('target_lun', 0)
         LOG.debug('(vol_id,number,host,port,iqn): (%s,%s,%s,%s)',
                   volume_id, target_host, target_port, target_iqn)
         if (device_number < 0 or
@@ -335,7 +343,6 @@ class VolumeHelper(HelperBase):
         volume_info['target'] = target_host
         volume_info['port'] = target_port
         volume_info['targetIQN'] = target_iqn
-        volume_info['LUNid'] = target_lun
         if ('auth_method' in connection_info and
             connection_info['auth_method'] == 'CHAP'):
             volume_info['chapuser'] = connection_info['auth_username']
