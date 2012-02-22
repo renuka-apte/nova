@@ -372,6 +372,7 @@ class ComputeManager(manager.SchedulerDependentManager):
                 block_device_mapping.append({'connection_info': cinfo,
                                              'mount_device':
                                              bdm['device_name']})
+                LOG.debug(block_device_mapping)
 
         return {
             'root_device_name': instance['root_device_name'],

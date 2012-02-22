@@ -35,6 +35,7 @@ from xml.parsers import expat
 
 from eventlet import greenthread
 
+from nova import block_device
 from nova import exception
 from nova import flags
 from nova.image import glance
@@ -43,6 +44,7 @@ from nova.openstack.common import cfg
 from nova import utils
 from nova.compute import instance_types
 from nova.compute import power_state
+from nova.virt import driver
 from nova.virt.disk import api as disk
 from nova.virt import xenapi
 from nova.virt.xenapi import volume_utils
@@ -338,6 +340,57 @@ class VMHelper(xenapi.HelperBase):
                     ' %(virtual_size)s, %(read_only)s) on %(sr_ref)s.'),
                   locals())
         return vdi_ref
+
+    @classmethod
+    def get_vdi_for_boot_from_vol(cls, session, instance, dev_params):
+        vdi_return_list = []
+        sr_ref = VolumeHelper.find_sr_by_uuid(session, dev_params['sr_uuid'])
+        if sr_ref:
+            LOG.debug("SR found on host")
+        else:
+            LOG.debug("How did we get here on singlehost??")
+            # introduce SR here
+            # sr_ref = VolumeHelper.introduce_sr(session, sr_uuid, label,
+            #                                   dev_params)
+        session.get_xenapi().SR.scan(sr_ref)
+        vdi_return_list.append(dict(vdi_type="os",
+                               vdi_uuid=dev_params['vdi_uuid']))
+        return vdi_return_list
+
+    @classmethod
+    def _volume_in_mapping(self, mount_device, block_device_info):
+        block_device_list = [block_device.strip_dev(vol['mount_device'])
+                             for vol in
+                            driver.block_device_info_get_mapping(
+                            block_device_info)]
+        swap = driver.block_device_info_get_swap(block_device_info)
+        if driver.swap_is_usable(swap):
+            block_device_list.append(
+                    block_device.strip_dev(swap['device_name']))
+        block_device_list += [block_device.strip_dev(ephemeral['device_name'])
+                              for ephemeral in
+                              driver.block_device_info_get_ephemerals(
+                              block_device_info)]
+        LOG.debug(_("block_device_list %s"), block_device_list)
+        return block_device.strip_dev(mount_device) in block_device_list
+
+    @classmethod
+    def get_vdis_for_instance(cls, context, session, instance, image,
+                              image_type,
+                              block_device_info=None):
+        LOG.debug("****** get_vdis_for_instance ******")
+        if block_device_info:
+            LOG.debug(block_device_info)
+            rootdev = block_device_info['root_device_name']
+            if cls._volume_in_mapping(rootdev, block_device_info):
+                LOG.debug("*** found, things correct so far")
+                # call function to return the vdi in connection info of block device
+                #make it a point to return from here
+                dev_params = block_device_info['block_device_mapping'][0] \
+                        ['connection_info']
+                return cls.get_vdi_for_boot_from_vol(session, instance, dev_params)
+        cls.create_image(context, session, instance, image,
+                         image_type)
 
     @classmethod
     def copy_vdi(cls, session, sr_ref, vdi_to_copy_ref):

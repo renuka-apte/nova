@@ -160,6 +160,7 @@ class VMOps(object):
         self.firewall_driver = fw_class(xenapi_session=self._session)
         vif_impl = utils.import_class(FLAGS.xenapi_vif_driver)
         self.vif_driver = vif_impl(xenapi_session=self._session)
+        self.default_root_dev = '/dev/sda'
 
     def list_instances(self):
         """List VM instances."""
@@ -229,11 +230,13 @@ class VMOps(object):
                                   self._session.get_xenapi_host(),
                                   False, False)
 
-    def _create_disks(self, context, instance, image_meta):
+    def _create_disks(self, context, instance, image_meta,
+                      block_device_info=None):
         disk_image_type = VMHelper.determine_disk_image_type(image_meta)
-        vdis = VMHelper.create_image(context, self._session,
-                                     instance, instance.image_ref,
-                                     disk_image_type)
+        vdis = VMHelper.get_vdis_for_instance(context, self._session,
+                                          instance, instance.image_ref,
+                                          disk_image_type,
+                                          block_device_info=block_device_info)
 
         for vdi in vdis:
             if vdi["vdi_type"] == "root":
@@ -241,7 +244,8 @@ class VMOps(object):
 
         return vdis
 
-    def spawn(self, context, instance, image_meta, network_info):
+    def spawn(self, context, instance, image_meta, network_info,
+              block_device_info=None):
         step = make_step_decorator(context, instance)
 
         @step
@@ -256,7 +260,8 @@ class VMOps(object):
 
         @step
         def create_disks_step(undo_mgr):
-            vdis = self._create_disks(context, instance, image_meta)
+            vdis = self._create_disks(context, instance, image_meta,
+                                      block_device_info)
 
             def undo_create_disks():
                 vdi_refs = []
@@ -334,8 +339,16 @@ class VMOps(object):
         def apply_security_group_filters_step(undo_mgr):
             self.firewall_driver.apply_instance_filter(instance, network_info)
 
+        @step
+        def bdev_set_default_root(undo_mgr):
+            if block_device_info:
+                LOG.debug(block_device_info)
+            if block_device_info and not block_device_info['root_device_name']:
+                block_device_info['root_device_name'] = self.default_root_dev
+
         undo_mgr = utils.UndoManager()
         try:
+            bdev_set_default_root(undo_mgr)
             vanity_step(undo_mgr)
 
             vdis = create_disks_step(undo_mgr)
