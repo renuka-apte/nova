@@ -130,6 +130,8 @@ def _parse_block_device_mapping(bdm):
     ebs = bdm.pop('ebs', None)
     if ebs:
         ec2_id = ebs.pop('snapshot_id', None)
+        if not ec2_id:
+            ec2_id = ebs.pop('volume_id', None)
         if ec2_id:
             id = ec2utils.ec2_id_to_id(ec2_id)
             if ec2_id.startswith('snap-'):
@@ -138,6 +140,7 @@ def _parse_block_device_mapping(bdm):
                 bdm['volume_id'] = id
             ebs.setdefault('delete_on_termination', True)
         bdm.update(ebs)
+    LOG.debug(bdm)
     return bdm
 
 
