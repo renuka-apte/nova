@@ -368,7 +368,7 @@ class VMHelper(xenapi.HelperBase):
                 dev_params = block_device_info['block_device_mapping'][0] \
                         ['connection_info']
                 return cls.get_vdi_for_boot_from_vol(session, instance, dev_params)
-        cls.create_image(context, session, instance, image, user_id,
+        return cls.create_image(context, session, instance, image, user_id,
                          project_id, image_type)
 
     @classmethod
