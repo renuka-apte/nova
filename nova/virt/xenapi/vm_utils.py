@@ -323,7 +323,8 @@ class VMHelper(xenapi.HelperBase):
     @classmethod
     def get_vdi_for_boot_from_vol(cls, session, instance, dev_params):
         vdi_return_list = []
-        sr_ref = VolumeHelper.find_sr_by_uuid(session, dev_params['sr_uuid'])
+        sr_ref = volume_utils.VolumeHelper.find_sr_by_uuid(session,
+                                                       dev_params['sr_uuid'])
         if sr_ref:
             LOG.debug("SR found on host")
         else:
@@ -331,7 +332,7 @@ class VMHelper(xenapi.HelperBase):
             # introduce SR here
             # sr_ref = VolumeHelper.introduce_sr(session, sr_uuid, label,
             #                                   dev_params)
-        session.get_xenapi().SR.scan(sr_ref)
+        session.call_xenapi("SR.scan", sr_ref)
         vdi_return_list.append(dict(vdi_type="os",
                                vdi_uuid=dev_params['vdi_uuid']))
         return vdi_return_list
@@ -366,7 +367,8 @@ class VMHelper(xenapi.HelperBase):
                 # call function to return the vdi in connection info of block device
                 #make it a point to return from here
                 dev_params = block_device_info['block_device_mapping'][0] \
-                        ['connection_info']
+                        ['connection_info']['data']
+                LOG.debug(dev_params)
                 return cls.get_vdi_for_boot_from_vol(session, instance, dev_params)
         return cls.create_image(context, session, instance, image, user_id,
                          project_id, image_type)
