@@ -1042,7 +1042,7 @@ class VMHelper(xenapi.HelperBase):
             return vm_refs[0]
 
     @classmethod
-    def lookup_vm_vdis(cls, session, vm_ref):
+    def lookup_vm_vdis(cls, session, vm_ref, nodestroys=None):
         """Look for the VDIs that are attached to the VM"""
         # Firstly we get the VBDs, then the VDIs.
         # TODO(Armando): do we leave the read-only devices?
@@ -1058,7 +1058,8 @@ class VMHelper(xenapi.HelperBase):
                 except cls.XenAPI.Failure, exc:
                     LOG.exception(exc)
                 else:
-                    vdi_refs.append(vdi_ref)
+                    if not record or record['uuid'] not in nodestroys:
+                        vdi_refs.append(vdi_ref)
             if len(vdi_refs) > 0:
                 return vdi_refs
             else:

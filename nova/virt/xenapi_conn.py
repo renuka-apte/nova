@@ -220,7 +220,7 @@ class XenAPIConnection(driver.ComputeDriver):
 
     def destroy(self, instance, network_info, block_device_info=None):
         """Destroy VM instance"""
-        self._vmops.destroy(instance, network_info)
+        self._vmops.destroy(instance, network_info, block_device_info)
 
     def pause(self, instance):
         """Pause VM instance"""

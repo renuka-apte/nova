@@ -1096,15 +1096,21 @@ class VMOps(object):
         """Shutdown a rescue instance."""
         self._session.call_xenapi("VM.hard_shutdown", rescue_vm_ref)
 
-    def _destroy_vdis(self, instance, vm_ref):
+    def _destroy_vdis(self, instance, vm_ref, block_device_info=None):
         """Destroys all VDIs associated with a VM."""
         instance_uuid = instance['uuid']
         LOG.debug(_("Destroying VDIs for Instance %(instance_uuid)s")
                   % locals())
-        vdi_refs = VMHelper.lookup_vm_vdis(self._session, vm_ref)
+        nodestroy = []
+        for bdm in block_device_info['block_device_mapping']:
+            if bdm['delete_on_termination'] == False:
+                nodestroy.append(bdm['connection_info']['data']['vdi_uuid'])
+
+        vdi_refs = VMHelper.lookup_vm_vdis(self._session, vm_ref, nodestroy)
 
         if not vdi_refs:
             return
+
 
         for vdi_ref in vdi_refs:
             try:
@@ -1188,7 +1194,7 @@ class VMOps(object):
 
         self._session.call_xenapi("VM.destroy", rescue_vm_ref)
 
-    def destroy(self, instance, network_info):
+    def destroy(self, instance, network_info, block_device_info=None):
         """Destroy VM instance.
 
         This is the method exposed by xenapi_conn.destroy(). The rest of the
@@ -1198,10 +1204,11 @@ class VMOps(object):
         instance_uuid = instance['uuid']
         LOG.info(_("Destroying VM for Instance %(instance_uuid)s") % locals())
         vm_ref = VMHelper.lookup(self._session, instance.name)
-        return self._destroy(instance, vm_ref, network_info, shutdown=True)
+        return self._destroy(instance, vm_ref, network_info, shutdown=True,
+                             block_device_info=block_device_info)
 
     def _destroy(self, instance, vm_ref, network_info=None, shutdown=True,
-                 destroy_kernel_ramdisk=True):
+                 destroy_kernel_ramdisk=True, block_device_info=None):
         """Destroys VM instance by performing:
 
             1. A shutdown if requested.
@@ -1217,7 +1224,7 @@ class VMOps(object):
         if shutdown:
             self._shutdown(instance, vm_ref)
 
-        self._destroy_vdis(instance, vm_ref)
+        self._destroy_vdis(instance, vm_ref, block_device_info)
         if destroy_kernel_ramdisk:
             self._destroy_kernel_ramdisk(instance, vm_ref)
 
