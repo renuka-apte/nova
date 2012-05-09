@@ -402,7 +402,10 @@ class ComputeManager(manager.SchedulerDependentManager):
                         {'connection_info': utils.dumps(cinfo)})
                 block_device_mapping.append({'connection_info': cinfo,
                                              'mount_device':
-                                             bdm['device_name']})
+                                             bdm['device_name'],
+                                             'delete_on_termination':
+                                             bdm['delete_on_termination']})
+                LOG.debug(_("%s"),block_device_mapping)
 
         return {
             'root_device_name': instance['root_device_name'],
@@ -639,7 +642,9 @@ class ComputeManager(manager.SchedulerDependentManager):
             cinfo = utils.loads(bdm['connection_info'])
             block_device_mapping.append({'connection_info': cinfo,
                                          'mount_device':
-                                         bdm['device_name']})
+                                         bdm['device_name'],
+                                         'delete_on_termination':
+                                         bdm['delete_on_termination']})
         # NOTE(vish): The mapping is passed in so the driver can disconnect
         #             from remote volumes if necessary
         return {'block_device_mapping': block_device_mapping}
