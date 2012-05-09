@@ -236,8 +236,6 @@ class VMOps(object):
         disk_image_type = VMHelper.determine_disk_image_type(image_meta)
         vdis = VMHelper.get_vdis_for_instance(context, self._session,
                                           instance, instance.image_ref,
-                                          instance.user_id,
-                                          instance.project_id,
                                           disk_image_type,
                                           block_device_info=block_device_info)
 
