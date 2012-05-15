@@ -384,8 +384,8 @@ class VMHelper(xenapi.HelperBase):
         return block_device.strip_dev(mount_device) in block_device_list
 
     @classmethod
-    def get_vdis_for_instance(cls, context, session, instance, image, user_id,
-                              project_id, image_type,
+    def get_vdis_for_instance(cls, context, session, instance, image,
+                              image_type,
                               block_device_info=None):
         if block_device_info:
             LOG.debug(_("block device info: %s"), block_device_info)
@@ -400,8 +400,8 @@ class VMHelper(xenapi.HelperBase):
                 return cls.get_vdi_for_boot_from_vol(session,
                                                      instance,
                                                      dev_params)
-        return cls.create_image(context, session, instance, image, user_id,
-                                project_id, image_type)
+        return cls.create_image(context, session, instance, image,
+                                image_type)
 
     @classmethod
     def copy_vdi(cls, session, sr_ref, vdi_to_copy_ref):
