@@ -20,9 +20,9 @@ Helper methods for operations related to the management of VM records and
 their attributes like VDIs, VIFs, as well as their lookup functions.
 """
 
+import collections
 import contextlib
 import cPickle as pickle
-import collections
 import decimal
 import json
 import os

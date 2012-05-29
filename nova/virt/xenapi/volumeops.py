@@ -51,7 +51,8 @@ class VolumeOps(object):
         # size presented to xenapi is in bytes, while euca api is in GB
         vdi_size = volume['size'] * 1024 * 1024 * 1024
         vdi_ref = vm_utils.VMHelper.create_vdi(self._session,
-                                               sr_ref, label, desc, vdi_size, False)
+                                               sr_ref, label, desc,
+                                               vdi_size, False)
         vdi_rec = self._session.call_xenapi("VDI.get_record", vdi_ref)
         sm_vol_rec['vdi_uuid'] = vdi_rec['uuid']
         return sm_vol_rec
