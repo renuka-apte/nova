@@ -320,10 +320,17 @@ class VMHelper(xenapi.HelperBase):
                     _('Unable to destroy VDI %s') % vdi_ref)
 
     @classmethod
-    def create_vdi(cls, session, sr_ref, instance, name_description,
+    def create_vdi(cls, session, sr_ref, info, name_description,
                    virtual_size, read_only=False):
         """Create a VDI record and returns its reference."""
-        name_label = instance['name']
+        # create_vdi may be called simply while creating a volume
+        # hence information about instance may or may not be present
+        otherconf = {}
+        if not isinstance(info, basestring):
+            name_label = info['display_name']
+            otherconf = {'nova_instance_uuid': info['uuid']}
+        else:
+            name_label = info
         vdi_ref = session.call_xenapi("VDI.create",
              {'name_label': name_label,
               'name_description': name_description,
@@ -333,7 +340,7 @@ class VMHelper(xenapi.HelperBase):
               'sharable': False,
               'read_only': read_only,
               'xenstore_data': {},
-              'other_config': {'nova_instance_uuid': instance['uuid']},
+              'other_config': otherconf,
               'sm_config': {},
               'tags': []})
         LOG.debug(_('Created VDI %(vdi_ref)s (%(name_label)s,'
