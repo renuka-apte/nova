@@ -1808,7 +1808,7 @@ def sm_flavor_create(context, values):
 
 def sm_flavor_update(context, sm_flavor_id, values):
     """Update a SM Flavor entry."""
-    return IMPL.sm_flavor_update(context, values)
+    return IMPL.sm_flavor_update(context, sm_flavor_id, values)
 
 
 def sm_flavor_delete(context, sm_flavor_id):
