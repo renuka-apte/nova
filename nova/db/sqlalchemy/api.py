@@ -4708,17 +4708,36 @@ def _sm_flavor_get_query(context, sm_flavor_label, session=None):
 
 @require_admin_context
 def sm_flavor_create(context, values):
-    sm_flavor = models.SMFlavors()
-    sm_flavor.update(values)
-    sm_flavor.save()
+    session = get_session()
+    with session.begin():
+        sm_flavor = model_query(context, models.SMFlavors,
+                                   session=session,
+                                   read_deleted="yes").\
+                           filter_by(label=values['label']).\
+                           first()
+        if not sm_flavor:
+            sm_flavor = models.SMFlavors()
+            sm_flavor.update(values)
+            sm_flavor.save(session=session)
+        else:
+            raise exception.Duplicate(_('Flavor exists'))
     return sm_flavor
 
 
 @require_admin_context
 def sm_flavor_update(context, sm_flavor_label, values):
-    sm_flavor = sm_flavor_get(context, sm_flavor_label)
-    sm_flavor.update(values)
-    sm_flavor.save()
+    session = get_session()
+    with session.begin():
+        sm_flavor = model_query(context, models.SMFlavors,
+                                   session=session,
+                                   read_deleted="yes").\
+                           filter_by(label=sm_flavor_label).\
+                           first()
+        if not sm_flavor:
+            raise exception.NotFound(
+                    _('%(sm_flavor_label) flavor found') % locals())
+        sm_flavor.update(values)
+        sm_flavor.save(session=session)
     return sm_flavor
 
 
@@ -4735,7 +4754,7 @@ def sm_flavor_get(context, sm_flavor_label):
 
     if not result:
         raise exception.NotFound(
-                _("No sm_flavor called %(sm_flavor)s") % locals())
+                _("No sm_flavor called %(sm_flavor_label)s") % locals())
 
     return result
 
