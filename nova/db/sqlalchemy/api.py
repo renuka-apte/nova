@@ -4700,42 +4700,61 @@ def sm_backend_conf_get_all(context):
 ####################
 
 
-def _sm_flavor_get_query(context, sm_flavor_label, session=None):
+def _sm_flavor_get_query(context, sm_flavor_id, session=None):
     return model_query(context, models.SMFlavors, session=session,
                        read_deleted="yes").\
-                        filter_by(label=sm_flavor_label)
+                        filter_by(id=sm_flavor_id)
 
 
 @require_admin_context
 def sm_flavor_create(context, values):
-    sm_flavor = models.SMFlavors()
-    sm_flavor.update(values)
-    sm_flavor.save()
-    return sm_flavor
-
-
-@require_admin_context
-def sm_flavor_update(context, sm_flavor_label, values):
-    sm_flavor = sm_flavor_get(context, sm_flavor_label)
-    sm_flavor.update(values)
-    sm_flavor.save()
-    return sm_flavor
-
-
-@require_admin_context
-def sm_flavor_delete(context, sm_flavor_label):
     session = get_session()
     with session.begin():
-        _sm_flavor_get_query(context, sm_flavor_label).delete()
+        sm_flavor = model_query(context, models.SMFlavors,
+                                   session=session,
+                                   read_deleted="yes").\
+                           filter_by(label=values['label']).\
+                           first()
+        if not sm_flavor:
+            sm_flavor = models.SMFlavors()
+            sm_flavor.update(values)
+            sm_flavor.save(session=session)
+        else:
+            raise exception.Duplicate(_('Flavor exists'))
+    return sm_flavor
 
 
 @require_admin_context
-def sm_flavor_get(context, sm_flavor_label):
-    result = _sm_flavor_get_query(context, sm_flavor_label).first()
+def sm_flavor_update(context, sm_flavor_id, values):
+    session = get_session()
+    with session.begin():
+        sm_flavor = model_query(context, models.SMFlavors,
+                                   session=session,
+                                   read_deleted="yes").\
+                           filter_by(id=sm_flavor_id).\
+                           first()
+        if not sm_flavor:
+            raise exception.NotFound(
+                    _('%(sm_flavor_id) flavor not found') % locals())
+        sm_flavor.update(values)
+        sm_flavor.save(session=session)
+    return sm_flavor
+
+
+@require_admin_context
+def sm_flavor_delete(context, sm_flavor_id):
+    session = get_session()
+    with session.begin():
+        _sm_flavor_get_query(context, sm_flavor_id).delete()
+
+
+@require_admin_context
+def sm_flavor_get(context, sm_flavor_id):
+    result = _sm_flavor_get_query(context, sm_flavor_id).first()
 
     if not result:
         raise exception.NotFound(
-                _("No sm_flavor called %(sm_flavor)s") % locals())
+                _("No sm_flavor called %(sm_flavor_id)s") % locals())
 
     return result
 
