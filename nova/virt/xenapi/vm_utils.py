@@ -20,7 +20,6 @@ Helper methods for operations related to the management of VM records and
 their attributes like VDIs, VIFs, as well as their lookup functions.
 """
 
-import collections
 import contextlib
 import cPickle as pickle
 import decimal
@@ -329,10 +328,9 @@ class VMHelper(xenapi.HelperBase):
         # create_vdi may be called simply while creating a volume
         # hence information about instance may or may not be present
         otherconf = {}
-        if isinstance(info, collections.Mapping) and 'name' in info:
-            name_label = instance['name']
-            if 'uuid' in info:
-                otherconf = {'nova_instance_uuid': info['uuid']}
+        if not isinstance(info, basestring):
+            name_label = info['display_name']
+            otherconf = {'nova_instance_uuid': info['uuid']}
         else:
             name_label = info
         vdi_ref = session.call_xenapi("VDI.create",
