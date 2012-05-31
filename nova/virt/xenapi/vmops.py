@@ -1040,11 +1040,12 @@ class VMOps(object):
         LOG.debug(_("Destroying VDIs for Instance %(instance_uuid)s")
                   % locals())
         nodestroy = []
-        for bdm in block_device_info['block_device_mapping']:
-            LOG.debug(bdm)
-            # bdm vols should either be left alone i.e. delete_on_termination
-            # is false, or they will be destroyed on cleanup_volumes
-            nodestroy.append(bdm['connection_info']['data']['vdi_uuid'])
+        if block_device_info:
+            for bdm in block_device_info['block_device_mapping']:
+                LOG.debug(bdm)
+                # bdm vols should either be left alone i.e. delete_on_termination
+                # is false, or they will be destroyed on cleanup_volumes
+                nodestroy.append(bdm['connection_info']['data']['vdi_uuid'])
 
         vdi_refs = VMHelper.lookup_vm_vdis(self._session, vm_ref, nodestroy)
 
