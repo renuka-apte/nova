@@ -161,6 +161,7 @@ class VMOps(object):
         self.firewall_driver = fw_class(xenapi_session=self._session)
         vif_impl = importutils.import_class(FLAGS.xenapi_vif_driver)
         self.vif_driver = vif_impl(xenapi_session=self._session)
+        self.default_root_dev = '/dev/sda'
 
     def list_instances(self):
         """List VM instances."""
@@ -230,11 +231,13 @@ class VMOps(object):
                                   self._session.get_xenapi_host(),
                                   False, False)
 
-    def _create_disks(self, context, instance, image_meta):
+    def _create_disks(self, context, instance, image_meta,
+                      block_device_info=None):
         disk_image_type = VMHelper.determine_disk_image_type(image_meta)
-        vdis = VMHelper.create_image(context, self._session,
-                                     instance, instance.image_ref,
-                                     disk_image_type)
+        vdis = VMHelper.get_vdis_for_instance(context, self._session,
+                                          instance, instance.image_ref,
+                                          disk_image_type,
+                                          block_device_info=block_device_info)
 
         for vdi in vdis:
             if vdi["vdi_type"] == "root":
@@ -242,7 +245,8 @@ class VMOps(object):
 
         return vdis
 
-    def spawn(self, context, instance, image_meta, network_info):
+    def spawn(self, context, instance, image_meta, network_info,
+              block_device_info=None):
         step = make_step_decorator(context, instance)
 
         @step
@@ -257,7 +261,8 @@ class VMOps(object):
 
         @step
         def create_disks_step(undo_mgr):
-            vdis = self._create_disks(context, instance, image_meta)
+            vdis = self._create_disks(context, instance, image_meta,
+                                      block_device_info)
 
             def undo_create_disks():
                 vdi_refs = []
@@ -335,8 +340,16 @@ class VMOps(object):
         def apply_security_group_filters_step(undo_mgr):
             self.firewall_driver.apply_instance_filter(instance, network_info)
 
+        @step
+        def bdev_set_default_root(undo_mgr):
+            if block_device_info:
+                LOG.debug(block_device_info)
+            if block_device_info and not block_device_info['root_device_name']:
+                block_device_info['root_device_name'] = self.default_root_dev
+
         undo_mgr = utils.UndoManager()
         try:
+            bdev_set_default_root(undo_mgr)
             vanity_step(undo_mgr)
 
             vdis = create_disks_step(undo_mgr)
@@ -1021,6 +1034,30 @@ class VMOps(object):
 
         raise exception.NotFound(_("Unable to find root VBD/VDI for VM"))
 
+    def _destroy_vdis(self, instance, vm_ref, block_device_info=None):
+        """Destroys all VDIs associated with a VM."""
+        instance_uuid = instance['uuid']
+        LOG.debug(_("Destroying VDIs for Instance %(instance_uuid)s")
+                  % locals())
+        nodestroy = []
+        if block_device_info:
+            for bdm in block_device_info['block_device_mapping']:
+                LOG.debug(bdm)
+                # bdm vols should either be left alone i.e. delete_on_termination
+                # is false, or they will be destroyed on cleanup_volumes
+                nodestroy.append(bdm['connection_info']['data']['vdi_uuid'])
+
+        vdi_refs = VMHelper.lookup_vm_vdis(self._session, vm_ref, nodestroy)
+
+        if not vdi_refs:
+            return
+
+        for vdi_ref in vdi_refs:
+            try:
+                VMHelper.destroy_vdi(self._session, vdi_ref)
+            except volume_utils.StorageError as exc:
+                LOG.error(exc)
+
     def _safe_destroy_vdis(self, vdi_refs):
         """Destroys the requested VDIs, logging any StorageError exceptions."""
         for vdi_ref in vdi_refs:
@@ -1096,7 +1133,7 @@ class VMOps(object):
         # Destroy Rescue VM
         self._session.call_xenapi("VM.destroy", rescue_vm_ref)
 
-    def destroy(self, instance, network_info):
+    def destroy(self, instance, network_info, block_device_info=None):
         """Destroy VM instance.
 
         This is the method exposed by xenapi_conn.destroy(). The rest of the
@@ -1115,10 +1152,11 @@ class VMOps(object):
         if rescue_vm_ref:
             self._destroy_rescue_instance(rescue_vm_ref, vm_ref)
 
-        return self._destroy(instance, vm_ref, network_info)
+        return self._destroy(instance, vm_ref, network_info,
+                             block_device_info=block_device_info)
 
     def _destroy(self, instance, vm_ref, network_info=None,
-                 destroy_kernel_ramdisk=True):
+                 destroy_kernel_ramdisk=True, block_device_info=None):
         """Destroys VM instance by performing:
 
             1. A shutdown
@@ -1135,9 +1173,7 @@ class VMOps(object):
         self._shutdown(instance, vm_ref)
 
         # Destroy VDIs
-        vdi_refs = VMHelper.lookup_vm_vdis(self._session, vm_ref)
-        self._safe_destroy_vdis(vdi_refs)
-
+        self._destroy_vdis(instance, vm_ref, block_device_info)
         if destroy_kernel_ramdisk:
             self._destroy_kernel_ramdisk(instance, vm_ref)
 

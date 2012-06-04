@@ -423,7 +423,10 @@ class ComputeManager(manager.SchedulerDependentManager):
                         {'connection_info': jsonutils.dumps(cinfo)})
                 block_device_mapping.append({'connection_info': cinfo,
                                              'mount_device':
-                                             bdm['device_name']})
+                                             bdm['device_name'],
+                                             'delete_on_termination':
+                                             bdm['delete_on_termination']})
+                LOG.debug(_("%s"),block_device_mapping)
 
         return {
             'root_device_name': instance['root_device_name'],
@@ -678,7 +681,9 @@ class ComputeManager(manager.SchedulerDependentManager):
                 cinfo = jsonutils.loads(bdm['connection_info'])
                 block_device_mapping.append({'connection_info': cinfo,
                                              'mount_device':
-                                             bdm['device_name']})
+                                             bdm['device_name'],
+                                             'delete_on_termination':
+                                             bdm['delete_on_termination']})
             except TypeError:
                 # if the block_device_mapping has no value in connection_info
                 # (returned as None), don't include in the mapping
