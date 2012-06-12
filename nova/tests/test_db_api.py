@@ -1048,3 +1048,18 @@ class SMVolumeDBApiTestCase(test.TestCase):
                           db.sm_flavor_get,
                           ctxt,
                           7)
+
+    def test_sm_flavor_get_by_label(self):
+        ctxt = context.get_admin_context()
+        params = _get_sm_flavor_params()
+        flav = db.sm_flavor_create(ctxt,
+                                   params)
+        val = db.sm_flavor_get_by_label(ctxt, flav['label'])
+        self.assertDictMatch(dict(val), dict(flav))
+
+    def test_sm_flavor_get_by_label_raise_notfound(self):
+        ctxt = context.get_admin_context()
+        self.assertRaises(exception.NotFound,
+                          db.sm_flavor_get,
+                          ctxt,
+                          "fake")

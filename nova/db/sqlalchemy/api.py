@@ -4833,6 +4833,17 @@ def sm_flavor_get_all(context):
     return model_query(context, models.SMFlavors, read_deleted="yes").all()
 
 
+@require_admin_context
+def sm_flavor_get_by_label(context, sm_flavor_label):
+    result = model_query(context, models.SMFlavors,
+                         read_deleted="yes").\
+                         filter_by(label=sm_flavor_label).first()
+    if not result:
+        raise exception.NotFound(
+                _("No sm_flavor called %(sm_flavor_label)s") % locals())
+    return result
+
+
 ###############################
 
 

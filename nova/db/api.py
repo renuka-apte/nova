@@ -1844,6 +1844,11 @@ def sm_flavor_get_all(context):
     return IMPL.sm_flavor_get_all(context)
 
 
+def sm_flavor_get_by_label(context, sm_flavor_label):
+    """Get a specific SM Flavor given label."""
+    return IMPL.sm_flavor_get_by_label(context, sm_flavor_label)
+
+
 ####################
 
 
