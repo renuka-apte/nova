@@ -357,7 +357,7 @@ def get_vdis_for_boot_from_vol(self, session, instance, dev_params):
     return vdi_return_list
 
 
-def _volume_in_mapping(self, mount_device, block_device_info):
+def _volume_in_mapping(mount_device, block_device_info):
     block_device_list = [block_device.strip_dev(vol['mount_device'])
                          for vol in
                          driver.block_device_info_get_mapping(
