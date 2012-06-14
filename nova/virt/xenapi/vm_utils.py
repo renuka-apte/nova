@@ -345,16 +345,16 @@ def create_vdi(session, sr_ref, info, disk_type, virtual_size,
     return vdi_ref
 
 
-def get_vdis_for_boot_from_vol(self, session, instance, dev_params):
-    vdi_return_list = []
+def get_vdis_for_boot_from_vol(session, instance, dev_params):
+    vdis = {}
     sr_uuid = dev_params['sr_uuid']
-    sr_ref = volume_utils.VolumeHelper.find_sr_by_uuid(session,
-                                                       sr_uuid)
+    sr_ref = volume_utils.find_sr_by_uuid(session,
+                                          sr_uuid)
     if sr_ref:
         session.call_xenapi("SR.scan", sr_ref)
-        vdi_return_list.append(dict(vdi_type="root",
-                                    vdi_uuid=dev_params['vdi_uuid']))
-    return vdi_return_list
+        return {'root': dict(uuid=dev_params['vdi_uuid'],
+                                file=None)}
+    return vdis
 
 
 def _volume_in_mapping(mount_device, block_device_info):
