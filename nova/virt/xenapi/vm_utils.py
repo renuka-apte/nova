@@ -360,19 +360,20 @@ def get_vdis_for_boot_from_vol(session, instance, dev_params):
 
 
 def _volume_in_mapping(mount_device, block_device_info):
-    block_device_list = [block_device.strip_dev(vol['mount_device'])
+    block_device_list = [block_device.strip_prefix(vol['mount_device'])
                          for vol in
                          driver.block_device_info_get_mapping(
                          block_device_info)]
     swap = driver.block_device_info_get_swap(block_device_info)
     if driver.swap_is_usable(swap):
-        block_device_list.append(block_device.strip_dev(swap['device_name']))
-    block_device_list += [block_device.strip_dev(ephemeral['device_name'])
+        swap_dev = swap['device_name']
+        block_device_list.append(block_device.strip_prefix(swap_dev))
+    block_device_list += [block_device.strip_prefix(ephemeral['device_name'])
                           for ephemeral in
                           driver.block_device_info_get_ephemerals(
                           block_device_info)]
     LOG.debug(_("block_device_list %s"), block_device_list)
-    return block_device.strip_dev(mount_device) in block_device_list
+    return block_device.strip_prefix(mount_device) in block_device_list
 
 
 def get_vdis_for_instance(context, session, instance, image,
