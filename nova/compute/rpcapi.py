@@ -88,12 +88,14 @@ class ComputeAPI(nova.openstack.common.rpc.proxy.RpcProxy):
                 topic=_compute_topic(self.topic, ctxt, None, instance))
 
     def check_can_live_migrate_destination(self, ctxt, instance, destination,
-            block_migration, disk_over_commit):
-        self.call(ctxt, self.make_msg('check_can_live_migrate_destination',
-                           instance_id=instance['id'],
-                           block_migration=block_migration,
-                           disk_over_commit=disk_over_commit),
-                  topic=_compute_topic(self.topic, ctxt, destination, None))
+                                           block_migration, disk_over_commit):
+        return self.call(ctxt,
+                         self.make_msg('check_can_live_migrate_destination',
+                                       instance_id=instance['id'],
+                                       block_migration=block_migration,
+                                       disk_over_commit=disk_over_commit),
+                         topic=_compute_topic(self.topic,
+                                              ctxt, destination, None))
 
     def check_can_live_migrate_source(self, ctxt, instance, dest_check_data):
         self.call(ctxt, self.make_msg('check_can_live_migrate_source',

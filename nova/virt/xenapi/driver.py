@@ -448,11 +448,14 @@ class XenAPIDriver(driver.ComputeDriver):
         :param context: security context
         :param instance_ref: nova.db.sqlalchemy.models.Instance
         :param dest_check_data: result of check_can_live_migrate_destination
+                                includes the block_migration flag
         """
-        pass
+        self._vmops.check_can_live_migrate_source(ctxt, instance_ref,
+                                                  dest_check_data)
 
     def live_migration(self, ctxt, instance_ref, dest,
-                       post_method, recover_method, block_migration=False):
+                       post_method, recover_method, block_migration=False,
+                       migrate_data=None):
         """Performs the live migration of the specified instance.
 
         :params ctxt: security context
@@ -467,9 +470,10 @@ class XenAPIDriver(driver.ComputeDriver):
             recovery method when any exception occurs.
             expected nova.compute.manager.recover_live_migration.
         :params block_migration: if true, migrate VM disk.
+        :params migrate_data: implementation specific params
         """
         self._vmops.live_migrate(ctxt, instance_ref, dest, post_method,
-                                 recover_method, block_migration)
+                                 recover_method, block_migration, migrate_data)
 
     def pre_live_migration(self, context, instance_ref, block_device_info,
                            network_info):
