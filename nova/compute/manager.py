@@ -1925,6 +1925,7 @@ class ComputeManager(manager.SchedulerDependentManager):
         finally:
             self.driver.check_can_live_migrate_destination_cleanup(ctxt,
                     dest_check_data)
+        return dest_check_data
 
     def check_can_live_migrate_source(self, ctxt, instance_id,
                                       dest_check_data):
@@ -1991,13 +1992,15 @@ class ComputeManager(manager.SchedulerDependentManager):
                                             disk)
 
     def live_migration(self, context, instance_id,
-                       dest, block_migration=False):
+                       dest, block_migration=False,
+                       migrate_data=None):
         """Executing live migration.
 
         :param context: security context
         :param instance_id: nova.db.sqlalchemy.models.Instance.Id
         :param dest: destination host
         :param block_migration: if true, prepare for block migration
+        :param migrate_data: implementation specific params
 
         """
         # Get instance for error handling.
@@ -2034,7 +2037,7 @@ class ComputeManager(manager.SchedulerDependentManager):
         self.driver.live_migration(context, instance_ref, dest,
                                    self.post_live_migration,
                                    self.rollback_live_migration,
-                                   block_migration)
+                                   block_migration, migrate_data)
 
     def post_live_migration(self, ctxt, instance_ref,
                             dest, block_migration=False):

@@ -558,6 +558,7 @@ class VMOps(object):
                                       'weight', str(vcpu_weight))
 
     def _get_vm_opaque_ref(self, instance):
+        """ Get xapi OpaqueRef from a db record. """
         vm_ref = vm_utils.lookup(self._session, instance['name'])
         if vm_ref is None:
             raise exception.NotFound(_('Could not find VM with name %s') %
@@ -1466,6 +1467,29 @@ class VMOps(object):
         host_uuid = self._get_host_uuid_from_aggregate(context, hostname)
         return self._session.call_xenapi("host.get_by_uuid", host_uuid)
 
+    def _migrate_receive(self, ctxt):
+        handle = self._session.handle
+        destref = self._session.xenapi.session.get_this_host(handle)
+        # Get the network to for migrate.
+        # This is the one associated with the pif marked management. From cli:
+        # uuid=`xe pif-list --minimal management=true`
+        # xe pif-param-get param-name=network-uuid uuid=$uuid
+        expr = 'field "management" = "true"'
+        pifs = self._session.call_xenapi('PIF.get_all_records_where',
+                                         expr)
+        if len(pifs) < 1:
+            raise exception.NotFound('No suitable network for migrate')
+
+        nwref = pifs[pifs.keys()[0]]['network']
+        try:
+            migrate_data = self._session.xenapi.host.migrate_receive(destref,
+                                                                     nwref,
+                                                                     {})
+        except Exception as ex:
+            raise
+        return {"migrate_data": migrate_data,
+                "block_migration": block_migration}
+
     def check_can_live_migrate_destination(self, ctxt, instance_ref,
                                            block_migration=False,
                                            disk_over_commit=False):
@@ -1478,8 +1502,11 @@ class VMOps(object):
 
         """
         if block_migration:
-            #TODO(johngarbutt): XenServer feature comming soon fixes this
-            raise NotImplementedError()
+            try:
+                migrate_data = self._migrate_receive(ctxt)
+            except exception as ex:
+                raise
+            return migrate_data
         else:
             src = instance_ref['host']
             self._ensure_host_in_aggregate(ctxt, src)
@@ -1487,11 +1514,42 @@ class VMOps(object):
             # instance is on a SR shared with other destination
             # block migration work will be able to resolve this
 
+    def check_can_live_migrate_source(self, ctxt, instance_ref,
+                                      dest_check_data):
+        """ Check if it is possible to execute live migration
+            on the source side.
+        :param context: security context
+        :param instance_ref: nova.db.sqlalchemy.models.Instance object
+        :param dest_check_data: data returned by the check on the 
+                                destination, includes block_migration flag
+
+        """
+        if dest_check_data['block_migration'] == True:
+            vmref = self._get_vm_opaque_ref(instance_ref)
+            migrate_data = dest_check_data['migrate_data']
+            try:
+                self._session.xenapi.VM.assert_can_migrate(vmref,
+                                                           migrate_data,
+                                                           True,
+                                                           {},
+                                                           {},
+                                                           {})
+            except exception as ex:
+                raise
+
     def live_migrate(self, context, instance, destination_hostname,
-                     post_method, recover_method, block_migration):
+                     post_method, recover_method, block_migration,
+                     migrate_data=None):
         if block_migration:
-            #TODO(johngarbutt): XenServer feature comming soon fixes this
-            raise NotImplementedError()
+            if not migrate_data:
+                raise exception.InvalidParameterValue('Block Migration
+                                requires migrate data given by destination')
+            try:
+                vm_ref = self._get_vm_opaque_ref(instance)
+                self._session.xenapi.VM.migrate_send(vmref, migrate_data,
+                                                     {}, {}, {})
+            except Exception as ex:
+                raise
         else:
             try:
                 vm_ref = self._get_vm_opaque_ref(instance)
