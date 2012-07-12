@@ -120,6 +120,7 @@ class ComputeAPI(nova.openstack.common.rpc.proxy.RpcProxy):
         1.39 - Remove instance_uuid, add instance argument to run_instance()
         1.40 - Remove instance_id, add instance argument to live_migration()
         1.41 - Adds refresh_instance_security_rules()
+        1.42 - Add migrate_data to live_migration()
     '''
 
     BASE_RPC_API_VERSION = '1.0'
@@ -165,14 +166,16 @@ class ComputeAPI(nova.openstack.common.rpc.proxy.RpcProxy):
                   version='1.36')
 
     def check_can_live_migrate_destination(self, ctxt, instance, destination,
-            block_migration, disk_over_commit):
+                                           block_migration, disk_over_commit):
         instance_p = jsonutils.to_primitive(instance)
-        self.call(ctxt, self.make_msg('check_can_live_migrate_destination',
-                           instance=instance_p,
-                           block_migration=block_migration,
-                           disk_over_commit=disk_over_commit),
-                  topic=_compute_topic(self.topic, ctxt, destination, None),
-                  version='1.10')
+        return self.call(ctxt,
+                         self.make_msg('check_can_live_migrate_destination',
+                                       instance=instance_p,
+                                       block_migration=block_migration,
+                                       disk_over_commit=disk_over_commit),
+                         topic=_compute_topic(self.topic,
+                                              ctxt, destination, None),
+                         version='1.10')
 
     def check_can_live_migrate_source(self, ctxt, instance, dest_check_data):
         instance_p = jsonutils.to_primitive(instance)
@@ -277,12 +280,14 @@ class ComputeAPI(nova.openstack.common.rpc.proxy.RpcProxy):
                 topic=_compute_topic(self.topic, ctxt, None, instance),
                 version='1.19')
 
-    def live_migration(self, ctxt, instance, dest, block_migration, host):
+    def live_migration(self, ctxt, instance, dest, block_migration, host,
+                       migrate_data=None):
         instance_p = jsonutils.to_primitive(instance)
         self.cast(ctxt, self.make_msg('live_migration', instance=instance_p,
-                dest=dest, block_migration=block_migration),
+                dest=dest, block_migration=block_migration,
+                migrate_data=migrate_data),
                 topic=_compute_topic(self.topic, ctxt, host, None),
-                version='1.40')
+                version='1.42')
 
     def pause_instance(self, ctxt, instance):
         instance_p = jsonutils.to_primitive(instance)
