@@ -2065,10 +2065,11 @@ class XenAPILiveMigrateTestCase(stubs.XenAPITestBase):
         stubs.stubout_session(self.stubs, stubs.FakeSessionForVMTests)
         self.context = context.get_admin_context()
         self.conn = xenapi_conn.XenAPIDriver(False)
+        xenapi_fake.create_local_pifs()
 
     def test_live_migration_calls_vmops(self):
         def fake_live_migrate(context, instance_ref, dest, post_method,
-                              recover_method, block_migration):
+                              recover_method, block_migration, migrate_data):
             fake_live_migrate.called = True
         self.stubs.Set(self.conn._vmops, "live_migrate", fake_live_migrate)
 
@@ -2083,10 +2084,32 @@ class XenAPILiveMigrateTestCase(stubs.XenAPITestBase):
         # ensure method is present
         self.conn.post_live_migration_at_destination(None, None, None, None)
 
-    def test_check_can_live_migrate_raises_on_block_migrate(self):
-        self.assertRaises(NotImplementedError,
-                          self.conn.check_can_live_migrate_destination,
-                          None, None, True, None)
+    def test_check_can_live_migrate_destination_with_block_migration(self):
+        expected = {'block_migration': True,
+                    'migrate_data': {'xenops': '',
+                                     'host': '',
+                                     'master': '',
+                                     'session_id': '',
+                                     'SM': ''}
+                    }
+        fake_data = self.conn.check_can_live_migrate_destination(self.context,
+                              {'host': 'host'}, True, False)
+        self.assertEqual(expected.keys(), fake_data.keys())
+        self.assertEqual(expected['migrate_data'].keys(),
+                         fake_data['migrate_data'].keys())
+
+    def test_check_can_live_migrate_source_with_block_migrate(self):
+        def fake_get_vm_opaque_ref(instance):
+            return "fake_vm"
+        self.stubs.Set(self.conn._vmops, "_get_vm_opaque_ref",
+                       fake_get_vm_opaque_ref)
+        dest_check_data = {'block_migration': True,
+                           'migrate_data': {}}
+        self.assertNotRaises(None,
+                             self.conn.check_can_live_migrate_source,
+                             self.context,
+                             {'host': 'host'},
+                             dest_check_data)
 
     def test_check_can_live_migrate_works(self):
         class fake_aggregate:

@@ -292,7 +292,8 @@ def _create_local_pif(host_ref):
                               'physical': True,
                               'VLAN': -1,
                               'device': 'fake0',
-                              'host_uuid': host_ref})
+                              'host_uuid': host_ref,
+                              'network': ''})
     return pif_ref
 
 
@@ -597,6 +598,25 @@ class SessionBase(object):
         pass
 
     def pool_set_name_label(self, session, pool_ref, name):
+        pass
+
+    def host_migrate_receive(self, session, destref, nwref, options):
+        # The dictionary below represents the true keys, as
+        # returned by a destination host, but fake values.
+        return {'xenops': 'http://localhost/services/xenops?'
+                'session_id=OpaqueRef:81d00b97-b205-b34d-924e-6f9597854cc0',
+                'host': 'OpaqueRef:5e4a3dd1-b71c-74ba-bbc6-58ee9ff6a889',
+                'master': 'http://localhost/',
+                'session_id': 'OpaqueRef:81d00b97-b205-b34d-924e-6f9597854cc0',
+                'SM': 'http://localhost/services/SM?'
+                'session_id=OpaqueRef:81d00b97-b205-b34d-924e-6f9597854cc0'}
+
+    def VM_assert_can_migrate(self, session, vmref, migrate_data, live,
+                              vdi_map, vif_map, options):
+        pass
+
+    def VM_migrate_send(self, session, mref, migrate_data, live, vdi_map,
+                        vif_map, options):
         pass
 
     def network_get_all_records_where(self, _1, filter):

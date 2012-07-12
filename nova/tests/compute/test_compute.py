@@ -1416,7 +1416,7 @@ class ComputeTestCase(BaseTestCase):
                                  'check_can_live_migrate_destination_cleanup')
 
         db.instance_get(context, inst_id).AndReturn(inst_ref)
-        dest_check_data = {"test": "data"}
+        dest_check_data = {"migrate_data": "data"}
         self.compute.driver.check_can_live_migrate_destination(context,
                 inst_ref, True, False).AndReturn(dest_check_data)
         self.compute.compute_rpcapi.check_can_live_migrate_source(context,
@@ -1444,7 +1444,7 @@ class ComputeTestCase(BaseTestCase):
                 inst_ref, True, False).AndRaise(exception.Invalid())
 
         self.mox.ReplayAll()
-        self.assertRaises(exception.Invalid,
+        self.assertRaises(exception.MigrationError,
                           self.compute.check_can_live_migrate_destination,
                           context, inst_id, True, False)
 

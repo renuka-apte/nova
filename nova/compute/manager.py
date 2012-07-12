@@ -1,4 +1,4 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
+stop=4
 
 # Copyright 2010 United States Government as represented by the
 # Administrator of the National Aeronautics and Space Administration.
@@ -1932,16 +1932,29 @@ class ComputeManager(manager.SchedulerDependentManager):
         :param instance_id: nova.db.sqlalchemy.models.Instance.Id
         :param block_migration: if true, prepare for block migration
         :param disk_over_commit: if true, allow disk over commit
+
+        Returns a mapping of values required in case of block migration
+        and None otherwise.
         """
         instance_ref = self.db.instance_get(ctxt, instance_id)
-        dest_check_data = self.driver.check_can_live_migrate_destination(ctxt,
-            instance_ref, block_migration, disk_over_commit)
+        try:
+            dest_check_data = self.driver.\
+                              check_can_live_migrate_destination(ctxt,
+                              instance_ref, block_migration, disk_over_commit)
+        except Exception as exc:
+            LOG.exception(exc)
+            raise exception.MigrationError(_('Check failed on'
+                                             ' destination'))
         try:
             self.compute_rpcapi.check_can_live_migrate_source(ctxt,
-                    instance_ref, dest_check_data)
+                                                              instance_ref,
+                                                              dest_check_data)
         finally:
             self.driver.check_can_live_migrate_destination_cleanup(ctxt,
                     dest_check_data)
+        if dest_check_data:
+            return dest_check_data['migrate_data']
+        return None
 
     @exception.wrap_exception(notifier=notifier, publisher_id=publisher_id())
     def check_can_live_migrate_source(self, ctxt, instance_id,
@@ -2009,13 +2022,15 @@ class ComputeManager(manager.SchedulerDependentManager):
                                             disk)
 
     def live_migration(self, context, instance_id,
-                       dest, block_migration=False):
+                       dest, block_migration=False,
+                       migrate_data=None):
         """Executing live migration.
 
         :param context: security context
         :param instance_id: nova.db.sqlalchemy.models.Instance.Id
         :param dest: destination host
         :param block_migration: if true, prepare for block migration
+        :param migrate_data: implementation specific params
 
         """
         # Get instance for error handling.
@@ -2052,7 +2067,7 @@ class ComputeManager(manager.SchedulerDependentManager):
         self.driver.live_migration(context, instance_ref, dest,
                                    self.post_live_migration,
                                    self.rollback_live_migration,
-                                   block_migration)
+                                   block_migration, migrate_data)
 
     def post_live_migration(self, ctxt, instance_ref,
                             dest, block_migration=False):
