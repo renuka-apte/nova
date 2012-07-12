@@ -268,8 +268,8 @@ class FakeDriver(driver.ComputeDriver):
         return
 
     def live_migration(self, context, instance_ref, dest,
-                       post_method, recover_method, block_migration=False):
-        """This method is supported only by libvirt."""
+                       post_method, recover_method, block_migration=False,
+                       migrate_data=None):
         return
 
     def finish_migration(self, context, migration, instance, disk_info,
@@ -281,7 +281,6 @@ class FakeDriver(driver.ComputeDriver):
 
     def pre_live_migration(self, context, instance_ref, block_device_info,
                            network_info):
-        """This method is supported only by libvirt."""
         return
 
     def unfilter_instance(self, instance_ref, network_info):

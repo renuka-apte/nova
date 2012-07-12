@@ -2424,7 +2424,8 @@ class LibvirtDriver(driver.ComputeDriver):
             time.sleep(1)
 
     def live_migration(self, ctxt, instance_ref, dest,
-                       post_method, recover_method, block_migration=False):
+                       post_method, recover_method, block_migration=False,
+                       migrate_data=None):
         """Spawning live_migration operation for distributing high-load.
 
         :params ctxt: security context
@@ -2440,6 +2441,7 @@ class LibvirtDriver(driver.ComputeDriver):
             recovery method when any exception occurs.
             expected nova.compute.manager.recover_live_migration.
         :params block_migration: if true, do block migration.
+        :params migrate_data: implementation specific params
 
         """
 
