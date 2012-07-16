@@ -1468,8 +1468,7 @@ class VMOps(object):
         return self._session.call_xenapi("host.get_by_uuid", host_uuid)
 
     def _migrate_receive(self, ctxt):
-        handle = self._session.handle
-        destref = self._session.xenapi.session.get_this_host(handle)
+        destref = self._session.get_xenapi_host()
         # Get the network to for migrate.
         # This is the one associated with the pif marked management. From cli:
         # uuid=`xe pif-list --minimal management=true`
