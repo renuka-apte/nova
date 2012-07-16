@@ -1539,29 +1539,6 @@ class VMOps(object):
             except exception as ex:
                 raise
 
-    def check_can_live_migrate_source(self, ctxt, instance_ref,
-                                      dest_check_data):
-        """ Check if it is possible to execute live migration
-            on the source side.
-        :param context: security context
-        :param instance_ref: nova.db.sqlalchemy.models.Instance object
-        :param dest_check_data: data returned by the check on the 
-                                destination, includes block_migration flag
-
-        """
-        if dest_check_data['block_migration'] == True:
-            vmref = self._get_vm_opaque_ref(instance_ref)
-            migrate_data = dest_check_data['migrate_data']
-            try:
-                self._session.xenapi.VM.assert_can_migrate(vmref,
-                                                           migrate_data,
-                                                           True,
-                                                           {},
-                                                           {},
-                                                           {})
-            except exception as ex:
-                raise
-
     def live_migrate(self, context, instance, destination_hostname,
                      post_method, recover_method, block_migration,
                      migrate_data=None):
