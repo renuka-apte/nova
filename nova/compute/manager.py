@@ -1930,7 +1930,7 @@ class ComputeManager(manager.SchedulerDependentManager):
         finally:
             self.driver.check_can_live_migrate_destination_cleanup(ctxt,
                     dest_check_data)
-        return dest_check_data
+        return dest_check_data['migrate_data']
 
     def check_can_live_migrate_source(self, ctxt, instance_id,
                                       dest_check_data):
