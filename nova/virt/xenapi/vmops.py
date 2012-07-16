@@ -1550,8 +1550,12 @@ class VMOps(object):
                 vm_ref = self._get_vm_opaque_ref(instance)
                 self._session.call_xenapi("VM.migrate_send", vm_ref, migrate_data,
                                           True, {}, {}, {})
-            except Exception as ex:
-                raise
+                post_method(context, instance, destination_hostname,
+                            block_migration)
+            except Exception:
+                with excutils.save_and_reraise_exception():
+                    recover_method(context, instance, destination_hostname,
+                                   block_migration)
         else:
             try:
                 vm_ref = self._get_vm_opaque_ref(instance)
