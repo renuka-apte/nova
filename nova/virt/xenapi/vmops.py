@@ -1481,13 +1481,14 @@ class VMOps(object):
 
         nwref = pifs[pifs.keys()[0]]['network']
         try:
-            migrate_data = self._session.xenapi.host.migrate_receive(destref,
+            migrate_data = self._session.call_xenapi("host.migrate_receive", 
+                                                                    destref,
                                                                      nwref,
                                                                      {})
         except Exception as ex:
             raise
-        return {"migrate_data": migrate_data,
-                "block_migration": block_migration}
+        LOG.debug(migrate_data)
+        return {"migrate_data": migrate_data}
 
     def check_can_live_migrate_destination(self, ctxt, instance_ref,
                                            block_migration=False,
@@ -1503,6 +1504,7 @@ class VMOps(object):
         if block_migration:
             try:
                 migrate_data = self._migrate_receive(ctxt)
+                migrate_data["block_migration"] = block_migration
             except exception as ex:
                 raise
             return migrate_data
@@ -1512,6 +1514,30 @@ class VMOps(object):
             # TODO(johngarbutt) we currently assume
             # instance is on a SR shared with other destination
             # block migration work will be able to resolve this
+            return None
+
+    def check_can_live_migrate_source(self, ctxt, instance_ref,
+                                      dest_check_data):
+        """ Check if it is possible to execute live migration
+            on the source side.
+        :param context: security context
+        :param instance_ref: nova.db.sqlalchemy.models.Instance object
+        :param dest_check_data: data returned by the check on the 
+                                destination, includes block_migration flag
+
+        """
+        if dest_check_data['block_migration'] == True:
+            vmref = self._get_vm_opaque_ref(instance_ref)
+            migrate_data = dest_check_data['migrate_data']
+            try:
+                self._session.call_xenapi("VM.assert_can_migrate", vmref,
+                                                           migrate_data,
+                                                           True,
+                                                           {},
+                                                           {},
+                                                           {})
+            except exception as ex:
+                raise
 
     def check_can_live_migrate_source(self, ctxt, instance_ref,
                                       dest_check_data):
@@ -1541,12 +1567,12 @@ class VMOps(object):
                      migrate_data=None):
         if block_migration:
             if not migrate_data:
-                raise exception.InvalidParameterValue('Block Migration
-                                requires migrate data given by destination')
+                raise exception.InvalidParameterValue('Block Migration '
+                                'requires the migrate data from destination')
             try:
                 vm_ref = self._get_vm_opaque_ref(instance)
-                self._session.xenapi.VM.migrate_send(vmref, migrate_data,
-                                                     {}, {}, {})
+                self._session.call_xenapi("VM.migrate_send", vmref, migrate_data,
+                                          {}, {}, {})
             except Exception as ex:
                 raise
         else:

@@ -68,7 +68,7 @@ class SchedulerAPI(nova.openstack.common.rpc.proxy.RpcProxy):
         return self.call(ctxt, self.make_msg('live_migration',
                 block_migration=block_migration,
                 disk_over_commit=disk_over_commit, instance_id=instance_id,
-                dest=dest, topic=topic))
+                dest=dest, topic=topic, migrate_data))
 
     def update_service_capabilities(self, ctxt, service_name, host,
             capabilities):
