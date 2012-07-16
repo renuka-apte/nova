@@ -1548,7 +1548,7 @@ class VMOps(object):
                                 'requires the migrate data from destination')
             try:
                 vm_ref = self._get_vm_opaque_ref(instance)
-                self._session.call_xenapi("VM.migrate_send", vmref, migrate_data,
+                self._session.call_xenapi("VM.migrate_send", vm_ref, migrate_data,
                                           {}, {}, {})
             except Exception as ex:
                 raise
