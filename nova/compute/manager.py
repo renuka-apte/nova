@@ -1917,9 +1917,14 @@ class ComputeManager(manager.SchedulerDependentManager):
         :param disk_over_commit: if true, allow disk over commit
         """
         instance_ref = self.db.instance_get(ctxt, instance_id)
-        dest_check_data = self.driver.check_can_live_migrate_destination(ctxt,
-            instance_ref, block_migration, disk_over_commit)
         try:
+            dest_check_data = self.driver.check_can_live_migrate_destination(ctxt,
+                instance_ref, block_migration, disk_over_commit)
+        except Exception as ex:
+            raise ex
+        try:
+            LOG.debug('******')
+            LOG.debug(dest_check_data)
             self.compute_rpcapi.check_can_live_migrate_source(ctxt,
                     instance_ref, dest_check_data)
         finally:
