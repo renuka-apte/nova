@@ -1549,7 +1549,7 @@ class VMOps(object):
             try:
                 vm_ref = self._get_vm_opaque_ref(instance)
                 self._session.call_xenapi("VM.migrate_send", vm_ref, migrate_data,
-                                          {}, {}, {})
+                                          True, {}, {}, {})
             except Exception as ex:
                 raise
         else:
