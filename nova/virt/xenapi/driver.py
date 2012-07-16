@@ -426,8 +426,8 @@ class XenAPIDriver(driver.ComputeDriver):
         :param disk_over_commit: if true, allow disk over commit
 
         """
-        self._vmops.check_can_live_migrate_destination(ctxt, instance_ref,
-                block_migration, disk_over_commit)
+        return self._vmops.check_can_live_migrate_destination(ctxt, instance_ref,
+                           block_migration, disk_over_commit)
 
     def check_can_live_migrate_destination_cleanup(self, ctxt,
                                                    dest_check_data):
