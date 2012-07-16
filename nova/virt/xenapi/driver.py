@@ -453,6 +453,12 @@ class XenAPIDriver(driver.ComputeDriver):
         self._vmops.check_can_live_migrate_source(ctxt, instance_ref,
                                                   dest_check_data)
 
+    def get_instance_disk_info(self, instance_name):
+        pass
+
+    def pre_block_migration(self, ctxt, instance_ref, disk_info_json):
+        pass
+
     def live_migration(self, ctxt, instance_ref, dest,
                        post_method, recover_method, block_migration=False,
                        migrate_data=None):
