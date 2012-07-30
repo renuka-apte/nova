@@ -918,23 +918,10 @@ class VMOps(object):
         instance_uuid = instance['uuid']
         LOG.debug(_("Destroying VDIs for Instance %(instance_uuid)s")
                   % locals())
-        nodestroy = []
-        if block_device_info:
-            for bdm in block_device_info['block_device_mapping']:
-                LOG.debug(bdm)
-                # If there is no associated VDI, skip it
-                if 'vdi_uuid' not in bdm['connection_info']['data']:
-                    LOG.debug(_("BDM contains no vdi_uuid"), instance=instance)
-                    continue
-                # bdm vols should be left alone if delete_on_termination
-                # is false, or they will be destroyed on cleanup_volumes
-                nodestroy.append(bdm['connection_info']['data']['vdi_uuid'])
 
-        vdi_refs = vm_utils.lookup_vm_vdis(self._session, vm_ref, nodestroy)
-
+        vdi_refs = vm_utils.lookup_vm_vdis(self._session, vm_ref)
         if not vdi_refs:
             return
-
         for vdi_ref in vdi_refs:
             try:
                 vm_utils.destroy_vdi(self._session, vdi_ref)
