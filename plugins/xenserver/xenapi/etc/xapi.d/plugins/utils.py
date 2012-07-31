@@ -34,6 +34,12 @@ def _rename(src, dst):
     logging.info("Renaming file '%s' -> '%s'" % (src, dst))
     os.rename(src, dst)
 
+def _move(src, dst):
+    # safer because is falls back to os.rename only if the
+    # destination is on the current filesystem
+    logging.info("Moving file '%s' -> '%s'" % (src, dst))
+    shutil.move(src, dst)
+    
 
 def make_subprocess(cmdline, stdout=False, stderr=False, stdin=False):
     """Make a subprocess according to the given command-line string
@@ -302,7 +308,7 @@ def import_vhds(sr_path, staging_path, uuid_stack):
     # Move files into SR
     for orig_path in files_to_move:
         new_path = os.path.join(sr_path, os.path.basename(orig_path))
-        _rename(orig_path, new_path)
+        _move(orig_path, new_path)
 
     return imported_vhds
 
