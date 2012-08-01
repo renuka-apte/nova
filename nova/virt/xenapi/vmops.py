@@ -920,10 +920,10 @@ class VMOps(object):
            need to be destroyed, so that the SR can be forgotten.
         """
         vbd_refs = self._session.call_xenapi("VM.get_VBDs", vm_ref)
-        for vbd_uuid in vbd_refs:
-            vbd_other_config = session.call_xenapi("VBD.get_other_config",
+        for vbd_ref in vbd_refs:
+            other_config = self._session.call_xenapi("VBD.get_other_config",
                                                    vbd_ref)
-            if 'osvol' in vbd_other_config:
+            if 'osvol' in other_config:
                 # this is a nova/cinder volume
                 try:
                     sr_ref = volume_utils.find_sr_from_vbd(self._session,
