@@ -526,15 +526,13 @@ def snapshot_attached_here(session, instance, vm_ref, label):
 
     try:
         vdi_snapshot_recs = _vdi_snapshot_vm_base(session, instance, vm_ref)
-
-    try:
         sr_ref = vm_vdi_rec["SR"]
         parent_uuid, base_uuid = _wait_for_vhd_coalesce(
                 session, instance, sr_ref, vm_vdi_ref, original_parent_uuid)
 
         vdi_uuids = []
         for snapshot in vdi_snapshot_recs:
-            vdi_uuids = [vdi_rec['uuid'] for vdi_rec in
+            vdi_uuids += [vdi_rec['uuid'] for vdi_rec in
                          _walk_vdi_chain(session, snapshot['uuid'])]
 
         yield vdi_uuids
@@ -551,20 +549,18 @@ def _vdi_snapshot_vm_base(session, instance, vm_ref):
             if 'osvol' not in oc:
                 # This volume is not a nova/cinder volume
                 vdi_ref = session.call_xenapi("VBD.get_VDI", vbd_ref)
-                snapshot_ref = session.call_xenapi("VDI.snapshot", {})
-                new_vdis.append(session.call_xenapi("VDI.get_record", vdi_ref))
+                snapshot_ref = session.call_xenapi("VDI.snapshot", vdi_ref, {})
+                new_vdis.append(session.call_xenapi("VDI.get_record", snapshot_ref))
 
     except session.XenAPI.Failure as exc:
         LOG(exc)
         raise
     finally:
-        LOG.debug(_("Snapshot uuids: %(new_vdis) created"), locals(),
-                  instance=instance)
         return new_vdis
 
 
 def _destroy_snapshots(session, instance, vdi_snapshot_recs):
-    vdis_refs = [session.call_xenapi("VDI.get_by_uuid", vdi_rec['uuid'])
+    vdi_refs = [session.call_xenapi("VDI.get_by_uuid", vdi_rec['uuid'])
                  for vdi_rec in vdi_snapshot_recs]
     safe_destroy_vdis(session, vdi_refs)
 
