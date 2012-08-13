@@ -1562,7 +1562,7 @@ class VMOps(object):
             vm_ref = self._get_vm_opaque_ref(instance)
             if block_migration:
                 if not migrate_data:
-                    raise exception.InvalidParameterValue('Block Migration'
+                    raise exception.InvalidParameterValue('Block Migration '
                                     'requires migrate data from destination')
                 try:
                     vdi_map = {}

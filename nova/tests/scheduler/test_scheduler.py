@@ -499,17 +499,9 @@ class SchedulerTestCase(test.TestCase):
                 {"task_state": task_states.MIGRATING}).AndReturn(
                         (instance, instance))
 
-<<<<<<< HEAD
         compute_rpcapi.ComputeAPI.live_migration(self.context,
                 host=instance['host'], instance=instance, dest=dest,
-                block_migration=block_migration)
-=======
-        driver.cast_to_compute_host(self.context, instance['host'],
-                'live_migration', update_db=False,
-                instance_id=instance_id, dest=dest,
-                block_migration=block_migration,
-                migrate_data={})
->>>>>>> a1b0574... xenapi: Support live migration without pools
+                block_migration=block_migration, migrate_data={})
 
         self.mox.ReplayAll()
         result = self.driver.schedule_live_migration(self.context,
