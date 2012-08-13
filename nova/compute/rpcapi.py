@@ -283,7 +283,8 @@ class ComputeAPI(nova.openstack.common.rpc.proxy.RpcProxy):
                        migrate_data=None):
         instance_p = jsonutils.to_primitive(instance)
         self.cast(ctxt, self.make_msg('live_migration', instance=instance_p,
-                dest=dest, block_migration=block_migration, migrate_data),
+                dest=dest, block_migration=block_migration,
+                migrate_data=migrate_data),
                 topic=_compute_topic(self.topic, ctxt, host, None),
                 version='1.41')
 
