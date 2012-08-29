@@ -1436,6 +1436,14 @@ class ComputeManager(manager.SchedulerDependentManager):
 
         with self._error_out_instance_on_exception(context, instance['uuid'],
                                                    reservations):
+            # Detaching volumes.
+            for bdm in self._get_instance_volume_bdms(ctxt, instance_ref['uuid']):
+            # We don't want to actually mark the volume
+            # detached, or delete the bdm, just remove the
+            # connection from this host.
+                self.remove_volume_connection(ctxt, bdm['volume_id'],
+                                              instance_ref)
+
             # NOTE(tr3buchet): tear down networks on source host
             self.network_api.setup_networks_on_host(context, instance,
                                migration_ref['source_compute'], teardown=True)
@@ -1643,6 +1651,15 @@ class ComputeManager(manager.SchedulerDependentManager):
 
             self.compute_rpcapi.finish_resize(context, instance, migration_id,
                 image, disk_info, migration_ref['dest_compute'], reservations)
+
+            # Restore instance state
+            current_power_state = self._get_power_state(context, instance)
+            self._instance_update(context,
+                                  instance['uuid'],
+                                  host=self.host,
+                                  power_state=current_power_state,
+                                  vm_state=vm_states.ACTIVE,
+                                  task_state=None)
 
             self._notify_about_instance_usage(context, instance, "resize.end",
                                               network_info=network_info)
