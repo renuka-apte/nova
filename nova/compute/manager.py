@@ -1601,6 +1601,14 @@ class ComputeManager(manager.SchedulerDependentManager):
             self.compute_rpcapi.finish_resize(context, instance, migration_id,
                 image, disk_info, migration_ref['dest_compute'], reservations)
 
+            # Restore instance state
+            current_power_state = self._get_power_state(context, instance)
+            self._instance_update(context,
+                                  instance['uuid'],
+                                  host=self.host,
+                                  power_state=current_power_state,
+                                  vm_state=vm_states.ACTIVE)
+
             self._notify_about_instance_usage(context, instance, "resize.end",
                                               network_info=network_info)
 
