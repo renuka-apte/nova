@@ -1589,6 +1589,16 @@ class ComputeManager(manager.SchedulerDependentManager):
                     instance_type_ref, self._legacy_nw_info(network_info),
                     block_device_info)
 
+
+            # Detaching volumes.
+            for bdm in self._get_instance_volume_bdms(context,
+                                                      instance['uuid']):
+                # NOTE: We don't want to actually mark the volume
+                #       detached, or delete the bdm, just remove the
+                #       connection from this host.
+                self.remove_volume_connection(context, bdm['volume_id'],
+                                              instance)
+
             self.db.migration_update(context,
                                      migration_id,
                                      {'status': 'post-migrating'})
@@ -1601,6 +1611,10 @@ class ComputeManager(manager.SchedulerDependentManager):
             self.compute_rpcapi.finish_resize(context, instance, migration_id,
                 image, disk_info, migration_ref['dest_compute'], reservations)
 
+            for bdm in self._get_instance_volume_bdms(context,
+                                                      instance['uuid']):
+                self.create_volume_connection(context, bdm['volume_id'],
+                                              instance)
             # Restore instance state
             current_power_state = self._get_power_state(context, instance)
             self._instance_update(context,
@@ -2070,6 +2084,42 @@ class ComputeManager(manager.SchedulerDependentManager):
         except exception.NotFound:
             pass
 
+    @exception.wrap_exception(notifier=notifier, publisher_id=publisher_id())
+    def create_volume_connection(self, context, volume_id, instance):
+        volume = self.volume_api.get(context, volume_id)
+        mountpoint = volume['volume_id']
+        context = context.elevated()
+        LOG.audit(_('Attaching volume %(volume_id)s to %(mountpoint)s'),
+                  locals(), context=context, instance=instance)
+        try:
+            connector = self.driver.get_volume_connector(instance)
+            connection_info = self.volume_api.initialize_connection(context,
+                                                                    volume,
+                                                                    connector)
+        except Exception:  # pylint: disable=W0702
+            with excutils.save_and_reraise_exception():
+                msg = _("Failed to connect to volume %(volume_id)s "
+                        "while attaching at %(mountpoint)s")
+                LOG.exception(msg % locals(), context=context,
+                              instance=instance)
+
+        if 'serial' not in connection_info:
+            connection_info['serial'] = volume_id
+
+        try:
+            self.driver.attach_volume(connection_info,
+                                      instance['name'],
+                                      mountpoint)
+        except Exception:  # pylint: disable=W0702
+            with excutils.save_and_reraise_exception():
+                msg = _("Failed to attach volume %(volume_id)s "
+                        "at %(mountpoint)s")
+                LOG.exception(msg % locals(), context=context,
+                              instance=instance)
+                self.volume_api.terminate_connection(context,
+                                                     volume,
+                                                     connector)
+ 
     @exception.wrap_exception(notifier=notifier, publisher_id=publisher_id())
     def check_can_live_migrate_destination(self, ctxt, instance,
                                            block_migration=False,
