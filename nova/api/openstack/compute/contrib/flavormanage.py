@@ -42,7 +42,8 @@ class FlavorManageController(wsgi.Controller):
         authorize(context)
 
         try:
-            flavor = instance_types.get_instance_type_by_flavor_id(id)
+            flavor = instance_types.get_instance_type_by_flavor_id(
+                    id, read_deleted="no")
         except exception.NotFound, e:
             raise webob.exc.HTTPNotFound(explanation=str(e))
 
@@ -58,7 +59,7 @@ class FlavorManageController(wsgi.Controller):
 
         vals = body['flavor']
         name = vals['name']
-        flavorid = vals['id']
+        flavorid = vals.get('id')
         memory_mb = vals.get('ram')
         vcpus = vals.get('vcpus')
         root_gb = vals.get('disk')

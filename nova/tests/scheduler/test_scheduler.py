@@ -19,16 +19,17 @@
 Tests For Scheduler
 """
 
+import mox
+
 from nova.compute import api as compute_api
 from nova.compute import power_state
 from nova.compute import rpcapi as compute_rpcapi
-from nova.compute import task_states
+from nova.compute import utils as compute_utils
 from nova.compute import vm_states
 from nova import context
 from nova import db
 from nova import exception
 from nova import flags
-from nova import notifications
 from nova.openstack.common import jsonutils
 from nova.openstack.common import rpc
 from nova.openstack.common import timeutils
@@ -47,9 +48,6 @@ class SchedulerManagerTestCase(test.TestCase):
     manager_cls = manager.SchedulerManager
     driver_cls = driver.Scheduler
     driver_cls_name = 'nova.scheduler.driver.Scheduler'
-
-    class AnException(Exception):
-        pass
 
     def setUp(self):
         super(SchedulerManagerTestCase, self).setUp()
@@ -153,14 +151,11 @@ class SchedulerManagerTestCase(test.TestCase):
                 method_name)
 
     def test_run_instance_exception_puts_instance_in_error_state(self):
-        """Test that a NoValidHost exception for run_instance puts
-        the instance in ERROR state and eats the exception.
-        """
-
         fake_instance_uuid = 'fake-instance-id'
         inst = {"vm_state": "", "task_state": ""}
 
         self._mox_schedule_method_helper('schedule_run_instance')
+        self.mox.StubOutWithMock(compute_utils, 'add_instance_fault_from_exc')
         self.mox.StubOutWithMock(db, 'instance_update_and_get_original')
 
         request_spec = {'instance_properties':
@@ -170,21 +165,35 @@ class SchedulerManagerTestCase(test.TestCase):
                 request_spec, None, None, None, None, {}).AndRaise(
                         exception.NoValidHost(reason=""))
         db.instance_update_and_get_original(self.context, fake_instance_uuid,
-                {"vm_state": vm_states.ERROR}).AndReturn((inst, inst))
+                {"vm_state": vm_states.ERROR,
+                 "task_state": None}).AndReturn((inst, inst))
+        compute_utils.add_instance_fault_from_exc(self.context,
+                fake_instance_uuid, mox.IsA(exception.NoValidHost),
+                mox.IgnoreArg())
 
         self.mox.ReplayAll()
         self.manager.run_instance(self.context, request_spec,
                 None, None, None, None, {})
 
+    def test_create_volume_no_valid_host_puts_volume_in_error(self):
+        self._mox_schedule_method_helper('schedule_create_volume')
+        self.mox.StubOutWithMock(db, 'volume_update')
+
+        self.manager.driver.schedule_create_volume(self.context, '1', '2',
+                None).AndRaise(exception.NoValidHost(reason=''))
+        db.volume_update(self.context, '1', {'status': 'error'})
+
+        self.mox.ReplayAll()
+        self.assertRaises(exception.NoValidHost, self.manager.create_volume,
+                          self.context, '1', '2')
+
     def test_prep_resize_no_valid_host_back_in_active_state(self):
-        """Test that a NoValidHost exception for prep_resize puts
-        the instance in ACTIVE state
-        """
         fake_instance_uuid = 'fake-instance-id'
         inst = {"vm_state": "", "task_state": ""}
 
         self._mox_schedule_method_helper('schedule_prep_resize')
 
+        self.mox.StubOutWithMock(compute_utils, 'add_instance_fault_from_exc')
         self.mox.StubOutWithMock(db, 'instance_update_and_get_original')
 
         request_spec = {'instance_type': 'fake_type',
@@ -204,18 +213,19 @@ class SchedulerManagerTestCase(test.TestCase):
         db.instance_update_and_get_original(self.context, fake_instance_uuid,
                 {"vm_state": vm_states.ACTIVE, "task_state": None}).AndReturn(
                         (inst, inst))
+        compute_utils.add_instance_fault_from_exc(self.context,
+                fake_instance_uuid, mox.IsA(exception.NoValidHost),
+                mox.IgnoreArg())
 
         self.mox.ReplayAll()
         self.manager.prep_resize(**kwargs)
 
     def test_prep_resize_exception_host_in_error_state_and_raise(self):
-        """Test that a NoValidHost exception for prep_resize puts
-        the instance in ACTIVE state
-        """
         fake_instance_uuid = 'fake-instance-id'
 
         self._mox_schedule_method_helper('schedule_prep_resize')
 
+        self.mox.StubOutWithMock(compute_utils, 'add_instance_fault_from_exc')
         self.mox.StubOutWithMock(db, 'instance_update_and_get_original')
 
         request_spec = {'instance_properties':
@@ -231,18 +241,23 @@ class SchedulerManagerTestCase(test.TestCase):
         }
 
         self.manager.driver.schedule_prep_resize(**kwargs).AndRaise(
-                self.AnException('something happened'))
+                test.TestingException('something happened'))
 
         inst = {
             "vm_state": "",
             "task_state": "",
         }
         db.instance_update_and_get_original(self.context, fake_instance_uuid,
-                {"vm_state": vm_states.ERROR}).AndReturn((inst, inst))
+                {"vm_state": vm_states.ERROR,
+                 "task_state": None}).AndReturn((inst, inst))
+        compute_utils.add_instance_fault_from_exc(self.context,
+                fake_instance_uuid, mox.IsA(test.TestingException),
+                mox.IgnoreArg())
 
         self.mox.ReplayAll()
 
-        self.assertRaises(self.AnException, self.manager.prep_resize, **kwargs)
+        self.assertRaises(test.TestingException, self.manager.prep_resize,
+                          **kwargs)
 
 
 class SchedulerTestCase(test.TestCase):
@@ -311,10 +326,8 @@ class SchedulerTestCase(test.TestCase):
         self.mox.StubOutWithMock(self.driver, '_live_migration_common_check')
         self.mox.StubOutWithMock(self.driver.compute_rpcapi,
                                  'check_can_live_migrate_destination')
-        self.mox.StubOutWithMock(db, 'instance_update_and_get_original')
         self.mox.StubOutWithMock(self.driver.compute_rpcapi,
                                  'live_migration')
-        self.mox.StubOutWithMock(notifications, 'send_update')
 
         dest = 'fake_host2'
         block_migration = False
@@ -330,11 +343,6 @@ class SchedulerTestCase(test.TestCase):
         self.driver.compute_rpcapi.check_can_live_migrate_destination(
                self.context, instance, dest, block_migration,
                disk_over_commit).AndReturn({})
-        db.instance_update_and_get_original(self.context, instance_uuid,
-                {"task_state": task_states.MIGRATING}).AndReturn(
-                        (instance, instance))
-        notifications.send_update(self.context, instance, instance,
-                                  service="scheduler")
         self.driver.compute_rpcapi.live_migration(self.context,
                 host=instance['host'], instance=instance, dest=dest,
                 block_migration=block_migration, migrate_data={})
@@ -353,7 +361,6 @@ class SchedulerTestCase(test.TestCase):
         self.mox.StubOutWithMock(db, 'instance_get_all_by_host')
         self.mox.StubOutWithMock(rpc, 'call')
         self.mox.StubOutWithMock(rpc, 'cast')
-        self.mox.StubOutWithMock(db, 'instance_update_and_get_original')
         self.mox.StubOutWithMock(self.driver.compute_rpcapi,
                                  'live_migration')
 
@@ -397,10 +404,6 @@ class SchedulerTestCase(test.TestCase):
                              'disk_over_commit': disk_over_commit},
                     "version": compute_rpcapi.ComputeAPI.BASE_RPC_API_VERSION},
                  None).AndReturn({})
-
-        db.instance_update_and_get_original(self.context, instance_uuid,
-                {"task_state": task_states.MIGRATING}).AndReturn(
-                        (instance, instance))
 
         self.driver.compute_rpcapi.live_migration(self.context,
                 host=instance['host'], instance=instance, dest=dest,

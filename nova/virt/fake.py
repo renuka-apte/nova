@@ -124,10 +124,12 @@ class FakeDriver(driver.ComputeDriver):
         pass
 
     def migrate_disk_and_power_off(self, context, instance, dest,
-                                   instance_type, network_info):
+                                   instance_type, network_info,
+                                   block_device_info=None):
         pass
 
-    def finish_revert_migration(self, instance, network_info):
+    def finish_revert_migration(self, instance, network_info,
+                                block_device_info=None):
         pass
 
     def power_off(self, instance):
@@ -229,7 +231,7 @@ class FakeDriver(driver.ComputeDriver):
         """
 
         dic = {'vcpus': 1,
-               'memory_mb': 4096,
+               'memory_mb': 8192,
                'local_gb': 1028,
                'vcpus_used': 0,
                'memory_mb_used': 0,
@@ -252,7 +254,8 @@ class FakeDriver(driver.ComputeDriver):
         return
 
     def finish_migration(self, context, migration, instance, disk_info,
-                         network_info, image_meta, resize_instance):
+                         network_info, image_meta, resize_instance,
+                         block_device_info=None):
         return
 
     def confirm_migration(self, migration, instance, network_info):

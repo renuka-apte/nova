@@ -127,17 +127,28 @@ class ComputeAPI(nova.openstack.common.rpc.proxy.RpcProxy):
         1.44 - Adds reserve_block_device_name()
 
         2.0 - Remove 1.x backwards compat
-        2.1 - Adds orig_sys_metadata to rebuild()
+        2.1 - Adds orig_sys_metadata to rebuild_instance()
+        2.2 - Adds slave_info parameter to add_aggregate_host() and
+              remove_aggregate_host()
     '''
 
-    BASE_RPC_API_VERSION = '2.1'
+    #
+    # NOTE(russellb): This is the default minimum version that the server
+    # (manager) side must implement unless otherwise specified using a version
+    # argument to self.call()/cast()/etc. here.  It should be left as X.0 where
+    # X is the current major API version (1.0, 2.0, ...).  For more information
+    # about rpc API versioning, see the docs in
+    # openstack/common/rpc/dispatcher.py.
+    #
+    BASE_RPC_API_VERSION = '2.0'
 
     def __init__(self):
         super(ComputeAPI, self).__init__(
                 topic=FLAGS.compute_topic,
                 default_version=self.BASE_RPC_API_VERSION)
 
-    def add_aggregate_host(self, ctxt, aggregate_id, host_param, host):
+    def add_aggregate_host(self, ctxt, aggregate_id, host_param, host,
+                           slave_info=None):
         '''Add aggregate host.
 
         :param ctxt: request context
@@ -146,9 +157,12 @@ class ComputeAPI(nova.openstack.common.rpc.proxy.RpcProxy):
                            parameter for the remote method.
         :param host: This is the host to send the message to.
         '''
+
         self.cast(ctxt, self.make_msg('add_aggregate_host',
-                aggregate_id=aggregate_id, host=host_param),
-                topic=_compute_topic(self.topic, ctxt, host, None))
+                aggregate_id=aggregate_id, host=host_param,
+                slave_info=slave_info),
+                topic=_compute_topic(self.topic, ctxt, host, None),
+                version='2.2')
 
     def add_fixed_ip_to_instance(self, ctxt, instance, network_id):
         instance_p = jsonutils.to_primitive(instance)
@@ -340,13 +354,15 @@ class ComputeAPI(nova.openstack.common.rpc.proxy.RpcProxy):
                 injected_files=injected_files, image_ref=image_ref,
                 orig_image_ref=orig_image_ref,
                 orig_sys_metadata=orig_sys_metadata),
-                topic=_compute_topic(self.topic, ctxt, None, instance))
+                topic=_compute_topic(self.topic, ctxt, None, instance),
+                version='2.1')
 
     def refresh_provider_fw_rules(self, ctxt, host):
         self.cast(ctxt, self.make_msg('refresh_provider_fw_rules'),
                 _compute_topic(self.topic, ctxt, host, None))
 
-    def remove_aggregate_host(self, ctxt, aggregate_id, host_param, host):
+    def remove_aggregate_host(self, ctxt, aggregate_id, host_param, host,
+                              slave_info=None):
         '''Remove aggregate host.
 
         :param ctxt: request context
@@ -355,9 +371,12 @@ class ComputeAPI(nova.openstack.common.rpc.proxy.RpcProxy):
                            parameter for the remote method.
         :param host: This is the host to send the message to.
         '''
+
         self.cast(ctxt, self.make_msg('remove_aggregate_host',
-                aggregate_id=aggregate_id, host=host_param),
-                topic=_compute_topic(self.topic, ctxt, host, None))
+                aggregate_id=aggregate_id, host=host_param,
+                slave_info=slave_info),
+                topic=_compute_topic(self.topic, ctxt, host, None),
+                version='2.2')
 
     def remove_fixed_ip_from_instance(self, ctxt, instance, address):
         instance_p = jsonutils.to_primitive(instance)
@@ -503,6 +522,14 @@ class SecurityGroupAPI(nova.openstack.common.rpc.proxy.RpcProxy):
         2.0 - Remove 1.x backwards compat
     '''
 
+    #
+    # NOTE(russellb): This is the default minimum version that the server
+    # (manager) side must implement unless otherwise specified using a version
+    # argument to self.call()/cast()/etc. here.  It should be left as X.0 where
+    # X is the current major API version (1.0, 2.0, ...).  For more information
+    # about rpc API versioning, see the docs in
+    # openstack/common/rpc/dispatcher.py.
+    #
     BASE_RPC_API_VERSION = '2.0'
 
     def __init__(self):

@@ -159,13 +159,15 @@ class TestQuantumv2(test.TestCase):
         self.nets4 = [{'id': 'his_netid4',
                       'name': 'his_netname4',
                       'tenant_id': 'his_tenantid'}]
+
         self.nets = [self.nets1, self.nets2, self.nets3, self.nets4]
 
+        self.port_address = '10.0.1.2'
         self.port_data1 = [{'network_id': 'my_netid1',
                            'device_id': 'device_id1',
                            'device_owner': 'compute:nova',
                            'id': 'my_portid1',
-                           'fixed_ips': [{'ip_address': '10.0.1.2',
+                           'fixed_ips': [{'ip_address': self.port_address,
                                           'subnet_id': 'my_subid1'}],
                            'mac_address': 'my_mac1', }]
         self.dhcp_port_data1 = [{'fixed_ips': [{'ip_address': '10.0.1.9',
@@ -179,6 +181,12 @@ class TestQuantumv2(test.TestCase):
                                 'fixed_ips': [{'ip_address': '10.0.2.2',
                                                'subnet_id': 'my_subid2'}],
                                 'mac_address': 'my_mac2', })
+        self.port_data3 = [{'network_id': 'my_netid1',
+                           'device_id': 'device_id3',
+                           'device_owner': 'compute:nova',
+                           'id': 'my_portid3',
+                           'fixed_ips': [],  # no fixed ip
+                           'mac_address': 'my_mac3', }]
         self.subnet_data1 = [{'id': 'my_subid1',
                              'cidr': '10.0.1.0/24',
                              'network_id': 'my_netid1',
@@ -273,6 +281,35 @@ class TestQuantumv2(test.TestCase):
                                           self.instance,
                                           networks=self.nets1)
         self._verify_nw_info(nw_inf, 0)
+
+    def test_get_instance_nw_info_without_subnet(self):
+        """Test get instance_nw_info for a port without subnet."""
+        api = quantumapi.API()
+        self.mox.StubOutWithMock(api.db, 'instance_info_cache_update')
+        api.db.instance_info_cache_update(
+            mox.IgnoreArg(),
+            self.instance['uuid'], mox.IgnoreArg())
+        self.moxed_client.list_ports(
+            tenant_id=self.instance['project_id'],
+            device_id=self.instance['uuid']).AndReturn(
+                {'ports': self.port_data3})
+        self.moxed_client.list_networks(
+            shared=False,
+            tenant_id=self.instance['project_id']).AndReturn(
+                {'networks': self.nets1})
+        self.moxed_client.list_networks(
+            shared=True).AndReturn({'networks': []})
+        self.mox.ReplayAll()
+
+        nw_inf = api.get_instance_nw_info(self.context,
+                                          self.instance)
+
+        id_suffix = 3
+        self.assertEquals(0, len(nw_inf.fixed_ips()))
+        self.assertEquals('my_netname1', nw_inf[0]['network']['label'])
+        self.assertEquals('my_portid%s' % id_suffix, nw_inf[0]['id'])
+        self.assertEquals('my_mac%s' % id_suffix, nw_inf[0]['address'])
+        self.assertEquals(0, len(nw_inf[0]['network']['subnets']))
 
     def _allocate_for_instance(self, net_idx=1, **kwargs):
         api = quantumapi.API()
@@ -510,16 +547,43 @@ class TestQuantumv2(test.TestCase):
         except exception.NetworkNotFound as ex:
             self.assertTrue("my_netid2, my_netid3" in str(ex))
 
-    def test_get_instance_uuids_by_ip_filter(self):
-        filters = {'ip': '^10\\.0\\.1\\.2$'}
+    def _mock_list_ports(self, port_data=None):
+        if port_data is None:
+            port_data = self.port_data2
+        address = self.port_address
         self.moxed_client.list_ports(
-            fixed_ips=MyComparator({'ip_address': '10.0.1.2'})).AndReturn(
-                {'ports': self.port_data2})
+            fixed_ips=MyComparator('ip_address=%s' % address)).AndReturn(
+                {'ports': port_data})
         self.mox.ReplayAll()
+        return address
+
+    def test_get_instance_uuids_by_ip_filter(self):
+        self._mock_list_ports()
+        filters = {'ip': '^10\\.0\\.1\\.2$'}
         api = quantumapi.API()
         result = api.get_instance_uuids_by_ip_filter(self.context, filters)
         self.assertEquals('device_id1', result[0]['instance_uuid'])
         self.assertEquals('device_id2', result[1]['instance_uuid'])
+
+    def test_get_fixed_ip_by_address_fails_for_no_ports(self):
+        address = self._mock_list_ports(port_data=[])
+        api = quantumapi.API()
+        self.assertRaises(exception.FixedIpNotFoundForAddress,
+                          api.get_fixed_ip_by_address,
+                          self.context, address)
+
+    def test_get_fixed_ip_by_address_succeeds_for_1_port(self):
+        address = self._mock_list_ports(port_data=self.port_data1)
+        api = quantumapi.API()
+        result = api.get_fixed_ip_by_address(self.context, address)
+        self.assertEquals('device_id1', result['instance_uuid'])
+
+    def test_get_fixed_ip_by_address_fails_for_more_than_1_port(self):
+        address = self._mock_list_ports()
+        api = quantumapi.API()
+        self.assertRaises(exception.FixedIpAssociatedWithMultipleInstances,
+                          api.get_fixed_ip_by_address,
+                          self.context, address)
 
     def _get_available_networks(self, prv_nets, pub_nets, req_ids=None):
         api = quantumapi.API()

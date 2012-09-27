@@ -376,8 +376,23 @@ class LibvirtDriver(driver.ComputeDriver):
 
     @staticmethod
     def _connect(uri, read_only):
-        auth = [[libvirt.VIR_CRED_AUTHNAME, libvirt.VIR_CRED_NOECHOPROMPT],
-                'root',
+        def _connect_auth_cb(creds, opaque):
+            if len(creds) == 0:
+                return 0
+            LOG.warning(
+                _("Can not handle authentication request for %d credentials")
+                % len(creds))
+            raise exception.NovaException(
+                _("Can not handle authentication request for %d credentials")
+                % len(creds))
+
+        auth = [[libvirt.VIR_CRED_AUTHNAME,
+                 libvirt.VIR_CRED_ECHOPROMPT,
+                 libvirt.VIR_CRED_REALM,
+                 libvirt.VIR_CRED_PASSPHRASE,
+                 libvirt.VIR_CRED_NOECHOPROMPT,
+                 libvirt.VIR_CRED_EXTERNAL],
+                _connect_auth_cb,
                 None]
 
         if read_only:
@@ -441,7 +456,7 @@ class LibvirtDriver(driver.ComputeDriver):
                 is_okay = False
                 errcode = e.get_error_code()
                 if errcode == libvirt.VIR_ERR_OPERATION_INVALID:
-                    # If the instance if already shut off, we get this:
+                    # If the instance is already shut off, we get this:
                     # Code=55 Error=Requested operation is not valid:
                     # domain is not running
                     (state, _max_mem, _mem, _cpus, _t) = virt_dom.info()
@@ -457,20 +472,24 @@ class LibvirtDriver(driver.ComputeDriver):
 
         def _wait_for_destroy():
             """Called at an interval until the VM is gone."""
+            # NOTE(vish): If the instance disappears during the destroy
+            #             we ignore it so the cleanup can still be
+            #             attempted because we would prefer destroy to
+            #             never fail.
             try:
                 state = self.get_info(instance)['state']
             except exception.NotFound:
                 LOG.error(_("During wait destroy, instance disappeared."),
                           instance=instance)
-                raise utils.LoopingCallDone(False)
+                raise utils.LoopingCallDone()
 
             if state == power_state.SHUTDOWN:
                 LOG.info(_("Instance destroyed successfully."),
                          instance=instance)
-                raise utils.LoopingCallDone(True)
+                raise utils.LoopingCallDone()
 
         timer = utils.LoopingCall(_wait_for_destroy)
-        return timer.start(interval=0.5).wait()
+        timer.start(interval=0.5).wait()
 
     def destroy(self, instance, network_info, block_device_info=None):
         self._destroy(instance)
@@ -486,9 +505,19 @@ class LibvirtDriver(driver.ComputeDriver):
                 try:
                     virt_dom.undefineFlags(
                         libvirt.VIR_DOMAIN_UNDEFINE_MANAGED_SAVE)
-                except libvirt.libvirtError as e:
+                except libvirt.libvirtError:
                     LOG.debug(_("Error from libvirt during undefineFlags."
                         " Retrying with undefine"), instance=instance)
+                    virt_dom.undefine()
+                except AttributeError:
+                    # NOTE(vish): Older versions of libvirt don't support
+                    #             undefine flags, so attempt to do the
+                    #             right thing.
+                    try:
+                        if virt_dom.hasManagedSaveImage(0):
+                            virt_dom.managedSaveRemove(0)
+                    except AttributeError:
+                        pass
                     virt_dom.undefine()
             except libvirt.libvirtError as e:
                 errcode = e.get_error_code()
@@ -579,11 +608,14 @@ class LibvirtDriver(driver.ComputeDriver):
             'host': FLAGS.host
         }
 
-    def _cleanup_resize(self, instance):
+    def _cleanup_resize(self, instance, network_info):
         target = os.path.join(FLAGS.instances_path,
                               instance['name'] + "_resize")
         if os.path.exists(target):
             shutil.rmtree(target)
+
+        if instance['host'] != FLAGS.host:
+            self.firewall_driver.unfilter_instance(instance, network_info)
 
     def volume_driver_method(self, method_name, connection_info,
                              *args, **kwargs):
@@ -867,7 +899,8 @@ class LibvirtDriver(driver.ComputeDriver):
                          instance=instance)
                 self._create_domain(domain=dom)
                 timer = utils.LoopingCall(self._wait_for_running, instance)
-                return timer.start(interval=0.5).wait()
+                timer.start(interval=0.5).wait()
+                return True
             greenthread.sleep(1)
         return False
 
@@ -894,20 +927,15 @@ class LibvirtDriver(driver.ComputeDriver):
 
         def _wait_for_reboot():
             """Called at an interval until the VM is running again."""
-            try:
-                state = self.get_info(instance)['state']
-            except exception.NotFound:
-                LOG.error(_("During reboot, instance disappeared."),
-                          instance=instance)
-                raise utils.LoopingCallDone
+            state = self.get_info(instance)['state']
 
             if state == power_state.RUNNING:
                 LOG.info(_("Instance rebooted successfully."),
                          instance=instance)
-                raise utils.LoopingCallDone
+                raise utils.LoopingCallDone()
 
         timer = utils.LoopingCall(_wait_for_reboot)
-        return timer.start(interval=0.5).wait()
+        timer.start(interval=0.5).wait()
 
     @exception.wrap_exception()
     def pause(self, instance):
@@ -932,7 +960,7 @@ class LibvirtDriver(driver.ComputeDriver):
         dom = self._lookup_by_name(instance['name'])
         self._create_domain(domain=dom)
         timer = utils.LoopingCall(self._wait_for_running, instance)
-        return timer.start(interval=0.5).wait()
+        timer.start(interval=0.5).wait()
 
     @exception.wrap_exception()
     def suspend(self, instance):
@@ -1036,20 +1064,15 @@ class LibvirtDriver(driver.ComputeDriver):
 
         def _wait_for_boot():
             """Called at an interval until the VM is running."""
-            try:
-                state = self.get_info(instance)['state']
-            except exception.NotFound:
-                LOG.error(_("During spawn, instance disappeared."),
-                          instance=instance)
-                raise utils.LoopingCallDone
+            state = self.get_info(instance)['state']
 
             if state == power_state.RUNNING:
                 LOG.info(_("Instance spawned successfully."),
                          instance=instance)
-                raise utils.LoopingCallDone
+                raise utils.LoopingCallDone()
 
         timer = utils.LoopingCall(_wait_for_boot)
-        return timer.start(interval=0.5).wait()
+        timer.start(interval=0.5).wait()
 
     def _flush_libvirt_console(self, pty):
         out, err = utils.execute('dd',
@@ -1160,11 +1183,11 @@ class LibvirtDriver(driver.ComputeDriver):
             else:
                 LOG.error(_("Error on '%(path)s' while checking direct I/O: "
                             "'%(ex)s'") % {'path': dirpath, 'ex': str(e)})
-                raise e
+                raise
         except Exception, e:
             LOG.error(_("Error on '%(path)s' while checking direct I/O: "
                         "'%(ex)s'") % {'path': dirpath, 'ex': str(e)})
-            raise e
+            raise
         finally:
             try:
                 os.unlink(testfile)
@@ -1317,7 +1340,7 @@ class LibvirtDriver(driver.ComputeDriver):
                                             eph['size'],
                                             instance["os_type"])
             image(_get_eph_disk(eph)).cache(fetch_func=fn,
-                                            fileman=fname,
+                                            filename=fname,
                                             size=size,
                                             ephemeral_size=eph['size'])
 
@@ -2199,14 +2222,16 @@ class LibvirtDriver(driver.ComputeDriver):
 
         :param ctxt: security context
         :param instance_ref: nova.db.sqlalchemy.models.Instance
-        :param dest: destination host
         :param block_migration: if true, prepare for block migration
         :param disk_over_commit: if true, allow disk over commit
         """
+        disk_available_mb = None
         if block_migration:
-            self._assert_compute_node_has_enough_disk(ctxt,
-                                                     instance_ref,
-                                                     disk_over_commit)
+            disk_available_gb = self._get_compute_info(ctxt,
+                                    FLAGS.host)['disk_available_least']
+            disk_available_mb = \
+                    (disk_available_gb * 1024) - FLAGS.reserved_host_disk_mb
+
         # Compare CPU
         src = instance_ref['host']
         source_cpu_info = self._get_compute_info(ctxt, src)['cpu_info']
@@ -2215,14 +2240,16 @@ class LibvirtDriver(driver.ComputeDriver):
         # Create file on storage, to be checked on source host
         filename = self._create_shared_storage_test_file()
 
-        return {"filename": filename, "block_migration": block_migration}
+        return {"filename": filename,
+                "block_migration": block_migration,
+                "disk_over_commit": disk_over_commit,
+                "disk_available_mb": disk_available_mb}
 
     def check_can_live_migrate_destination_cleanup(self, ctxt,
                                                    dest_check_data):
         """Do required cleanup on dest host after check_can_live_migrate calls
 
         :param ctxt: security context
-        :param disk_over_commit: if true, allow disk over commit
         """
         filename = dest_check_data["filename"]
         self._cleanup_shared_storage_test_file(filename)
@@ -2251,6 +2278,9 @@ class LibvirtDriver(driver.ComputeDriver):
                 reason = _("Block migration can not be used "
                            "with shared storage.")
                 raise exception.InvalidLocalStorage(reason=reason, path=source)
+            self._assert_dest_node_has_enough_disk(ctxt, instance_ref,
+                                    dest_check_data['disk_available_mb'],
+                                    dest_check_data['disk_over_commit'])
 
         elif not shared:
             reason = _("Live migration can not be used "
@@ -2262,9 +2292,9 @@ class LibvirtDriver(driver.ComputeDriver):
         compute_node_ref = db.service_get_all_compute_by_host(context, host)
         return compute_node_ref[0]['compute_node'][0]
 
-    def _assert_compute_node_has_enough_disk(self, context, instance_ref,
-                                             disk_over_commit):
-        """Checks if host has enough disk for block migration."""
+    def _assert_dest_node_has_enough_disk(self, context, instance_ref,
+                                             available_mb, disk_over_commit):
+        """Checks if destination has enough disk for block migration."""
         # Libvirt supports qcow2 disk format,which is usually compressed
         # on compute nodes.
         # Real disk image (compressed) may enlarged to "virtual disk size",
@@ -2275,11 +2305,7 @@ class LibvirtDriver(driver.ComputeDriver):
         # if disk_over_commit is True,
         #  otherwise virtual disk size < available disk size.
 
-        # Getting total available disk of host
-        dest = FLAGS.host
-        available_gb = self._get_compute_info(context,
-                                              dest)['disk_available_least']
-        available = available_gb * (1024 ** 3)
+        available = available_mb * (1024 ** 2)
 
         ret = self.get_instance_disk_info(instance_ref['name'])
         disk_infos = jsonutils.loads(ret)
@@ -2295,9 +2321,10 @@ class LibvirtDriver(driver.ComputeDriver):
         # Check that available disk > necessary disk
         if (available - necessary) < 0:
             instance_uuid = instance_ref['uuid']
-            reason = _("Unable to migrate %(instance_uuid)s to %(dest)s: "
-                       "Lack of disk(host:%(available)s "
-                       "<= instance:%(necessary)s)")
+            reason = _("Unable to migrate %(instance_uuid)s: "
+                       "Disk of instance is too large(available"
+                       " on destination host:%(available)s "
+                       "< need:%(necessary)s)")
             raise exception.MigrationError(reason=reason % locals())
 
     def _compare_cpu(self, cpu_info):
@@ -2477,7 +2504,7 @@ class LibvirtDriver(driver.ComputeDriver):
                 post_method(ctxt, instance_ref, dest, block_migration)
 
         timer.f = wait_for_live_migration
-        return timer.start(interval=0.5).wait()
+        timer.start(interval=0.5).wait()
 
     def pre_live_migration(self, context, instance_ref, block_device_info,
                            network_info):
@@ -2737,15 +2764,35 @@ class LibvirtDriver(driver.ComputeDriver):
         """Manage the local cache of images."""
         self.image_cache_manager.verify_base_images(context)
 
+    def _cleanup_remote_migration(self, dest, inst_base, inst_base_resize):
+        """Used only for cleanup in case migrate_disk_and_power_off fails"""
+        try:
+            if os.path.exists(inst_base_resize):
+                utils.execute('rm', '-rf', inst_base)
+                utils.execute('mv', inst_base_resize, inst_base)
+                utils.execute('ssh', dest, 'rm', '-rf', inst_base)
+        except Exception:
+            pass
+
     @exception.wrap_exception()
     def migrate_disk_and_power_off(self, context, instance, dest,
-                                   instance_type, network_info):
+                                   instance_type, network_info,
+                                   block_device_info=None):
         LOG.debug(_("Starting migrate_disk_and_power_off"),
                    instance=instance)
         disk_info_text = self.get_instance_disk_info(instance['name'])
         disk_info = jsonutils.loads(disk_info_text)
 
         self.power_off(instance)
+
+        block_device_mapping = driver.block_device_info_get_mapping(
+            block_device_info)
+        for vol in block_device_mapping:
+            connection_info = vol['connection_info']
+            mount_device = vol['mount_device'].rpartition("/")[2]
+            self.volume_driver_method('disconnect_volume',
+                                      connection_info,
+                                      mount_device)
 
         # copy disks to destination
         # rename instance dir to +_resize at first for using
@@ -2779,33 +2826,24 @@ class LibvirtDriver(driver.ComputeDriver):
 
                 else:  # raw or qcow2 with no backing file
                     libvirt_utils.copy_image(from_path, img_path, host=dest)
-        except Exception, e:
-            try:
-                if os.path.exists(inst_base_resize):
-                    utils.execute('rm', '-rf', inst_base)
-                    utils.execute('mv', inst_base_resize, inst_base)
-                    utils.execute('ssh', dest, 'rm', '-rf', inst_base)
-            except Exception:
-                pass
-            raise e
+        except Exception:
+            with excutils.save_and_reraise_exception():
+                self._cleanup_remote_migration(dest, inst_base,
+                                               inst_base_resize)
 
         return disk_info_text
 
     def _wait_for_running(self, instance):
-        try:
-            state = self.get_info(instance)['state']
-        except exception.NotFound:
-            LOG.error(_("During wait running, instance disappeared."),
-                      instance=instance)
-            raise utils.LoopingCallDone(False)
+        state = self.get_info(instance)['state']
 
         if state == power_state.RUNNING:
             LOG.info(_("Instance running successfully."), instance=instance)
-            raise utils.LoopingCallDone(True)
+            raise utils.LoopingCallDone()
 
     @exception.wrap_exception()
     def finish_migration(self, context, migration, instance, disk_info,
-                         network_info, image_meta, resize_instance):
+                         network_info, image_meta, resize_instance,
+                         block_device_info=None):
         LOG.debug(_("Starting finish_migration"), instance=instance)
 
         # resize disks. only "disk" and "disk.local" are necessary.
@@ -2842,18 +2880,21 @@ class LibvirtDriver(driver.ComputeDriver):
                               '-O', 'qcow2', info['path'], path_qcow)
                 utils.execute('mv', path_qcow, info['path'])
 
-        xml = self.to_xml(instance, network_info)
+        xml = self.to_xml(instance, network_info,
+                          block_device_info=block_device_info)
         # assume _create_image do nothing if a target file exists.
         # TODO(oda): injecting files is not necessary
         self._create_image(context, instance, xml,
                                     network_info=network_info,
                                     block_device_info=None)
-        self._create_domain_and_network(xml, instance, network_info)
+        self._create_domain_and_network(xml, instance, network_info,
+                                        block_device_info)
         timer = utils.LoopingCall(self._wait_for_running, instance)
-        return timer.start(interval=0.5).wait()
+        timer.start(interval=0.5).wait()
 
     @exception.wrap_exception()
-    def finish_revert_migration(self, instance, network_info):
+    def finish_revert_migration(self, instance, network_info,
+                                block_device_info=None):
         LOG.debug(_("Starting finish_revert_migration"),
                    instance=instance)
 
@@ -2861,16 +2902,17 @@ class LibvirtDriver(driver.ComputeDriver):
         inst_base_resize = inst_base + "_resize"
         utils.execute('mv', inst_base_resize, inst_base)
 
-        xml_path = os.path.join(inst_base, 'libvirt.xml')
-        xml = open(xml_path).read()
-        self._create_domain_and_network(xml, instance, network_info)
+        xml = self.to_xml(instance, network_info,
+                          block_device_info=block_device_info)
+        self._create_domain_and_network(xml, instance, network_info,
+                                        block_device_info)
 
         timer = utils.LoopingCall(self._wait_for_running, instance)
-        return timer.start(interval=0.5).wait()
+        timer.start(interval=0.5).wait()
 
     def confirm_migration(self, migration, instance, network_info):
         """Confirms a resize, destroying the source VM"""
-        self._cleanup_resize(instance)
+        self._cleanup_resize(instance, network_info)
 
     def get_diagnostics(self, instance):
         def get_io_devices(xml_doc):

@@ -26,6 +26,7 @@ import functools
 import warnings
 
 from nova import block_device
+from nova.common.sqlalchemyutils import paginate_query
 from nova.compute import vm_states
 from nova import db
 from nova.db.sqlalchemy import models
@@ -46,8 +47,6 @@ from sqlalchemy.sql.expression import literal_column
 from sqlalchemy.sql import func
 
 FLAGS = flags.FLAGS
-flags.DECLARE('reserved_host_disk_mb', 'nova.scheduler.host_manager')
-flags.DECLARE('reserved_host_memory_mb', 'nova.scheduler.host_manager')
 
 LOG = logging.getLogger(__name__)
 
@@ -187,20 +186,21 @@ def require_aggregate_exists(f):
     return wrapper
 
 
-def model_query(context, *args, **kwargs):
+def model_query(context, model, *args, **kwargs):
     """Query helper that accounts for context's `read_deleted` field.
 
     :param context: context to query under
     :param session: if present, the session to use
     :param read_deleted: if present, overrides context's read_deleted field.
     :param project_only: if present and context is user-type, then restrict
-            query to match the context's project_id.
+            query to match the context's project_id. If set to 'allow_none',
+            restriction includes project_id = None.
     """
     session = kwargs.get('session') or get_session()
     read_deleted = kwargs.get('read_deleted') or context.read_deleted
-    project_only = kwargs.get('project_only')
+    project_only = kwargs.get('project_only', False)
 
-    query = session.query(*args)
+    query = session.query(model, *args)
 
     if read_deleted == 'no':
         query = query.filter_by(deleted=False)
@@ -212,8 +212,12 @@ def model_query(context, *args, **kwargs):
         raise Exception(
                 _("Unrecognized read_deleted value '%s'") % read_deleted)
 
-    if project_only and is_user_context(context):
-        query = query.filter_by(project_id=context.project_id)
+    if is_user_context(context) and project_only:
+        if project_only == 'allow_none':
+            query = query.filter(or_(model.project_id == context.project_id,
+                                     model.project_id == None))
+        else:
+            query = query.filter_by(project_id=context.project_id)
 
     return query
 
@@ -733,6 +737,35 @@ def floating_ip_bulk_create(context, ips):
             session.add(model)
 
 
+def _ip_range_splitter(ips, block_size=256):
+    """Yields blocks of IPs no more than block_size elements long."""
+    out = []
+    count = 0
+    for ip in ips:
+        out.append(ip['address'])
+        count += 1
+
+        if count > block_size - 1:
+            yield out
+            out = []
+            count = 0
+
+    if out:
+        yield out
+
+
+@require_context
+def floating_ip_bulk_destroy(context, ips):
+    session = get_session()
+    with session.begin():
+        for ip_block in _ip_range_splitter(ips):
+            model_query(context, models.FloatingIp).\
+                filter(models.FloatingIp.address.in_(ip_block)).\
+                update({'deleted': True,
+                        'deleted_at': timeutils.utcnow()},
+                       synchronize_session='fetch')
+
+
 @require_context
 def floating_ip_create(context, values, session=None):
     if not session:
@@ -837,8 +870,9 @@ def floating_ip_set_auto_assigned(context, address):
         floating_ip_ref.save(session=session)
 
 
-def _floating_ip_get_all(context):
-    return model_query(context, models.FloatingIp, read_deleted="no")
+def _floating_ip_get_all(context, session=None):
+    return model_query(context, models.FloatingIp, read_deleted="no",
+                       session=session)
 
 
 @require_admin_context
@@ -1387,8 +1421,8 @@ def instance_create(context, values):
 
     def _get_sec_group_models(session, security_groups):
         models = []
-        default_group = security_group_ensure_default(context,
-                session=session)
+        _existed, default_group = security_group_ensure_default(context,
+            session=session)
         if 'default' in security_groups:
             models.append(default_group)
             # Generate a new list, so we don't modify the original
@@ -1503,7 +1537,8 @@ def instance_get_all(context, columns_to_join=None):
 
 
 @require_context
-def instance_get_all_by_filters(context, filters, sort_key, sort_dir):
+def instance_get_all_by_filters(context, filters, sort_key, sort_dir,
+                                limit=None, marker=None):
     """Return instances that match all filters.  Deleted instances
     will be returned by default, unless there's a filter that says
     otherwise"""
@@ -1557,6 +1592,18 @@ def instance_get_all_by_filters(context, filters, sort_key, sort_dir):
                                 filters, exact_match_filter_names)
 
     query_prefix = regex_filter(query_prefix, models.Instance, filters)
+
+    # paginate query
+    if marker is not None:
+        try:
+            marker = instance_get_by_uuid(context, marker, session=session)
+        except exception.InstanceNotFound as e:
+            raise exception.MarkerNotFound(marker)
+    query_prefix = paginate_query(query_prefix, models.Instance, limit,
+                           [sort_key, 'created_at', 'id'],
+                           marker=marker,
+                           sort_dir=sort_dir)
+
     instances = query_prefix.all()
     return instances
 
@@ -2091,9 +2138,9 @@ def network_disassociate(context, network_id):
 
 
 @require_context
-def network_get(context, network_id, session=None):
+def network_get(context, network_id, session=None, project_only='allow_none'):
     result = model_query(context, models.Network, session=session,
-                         project_only=True).\
+                         project_only=project_only).\
                     filter_by(id=network_id).\
                     first()
 
@@ -2113,23 +2160,16 @@ def network_get_all(context):
     return result
 
 
-@require_admin_context
-def network_get_all_by_uuids(context, network_uuids, project_id=None):
-    project_or_none = or_(models.Network.project_id == project_id,
-                          models.Network.project_id == None)
-    result = model_query(context, models.Network, read_deleted="no").\
+@require_context
+def network_get_all_by_uuids(context, network_uuids,
+                             project_only="allow_none"):
+    result = model_query(context, models.Network, read_deleted="no",
+                         project_only=project_only).\
                 filter(models.Network.uuid.in_(network_uuids)).\
-                filter(project_or_none).\
                 all()
 
     if not result:
         raise exception.NoNetworksFound()
-
-    #check if host is set to all of the networks
-    # returned in the result
-    for network in result:
-        if network['host'] is None:
-            raise exception.NetworkHostNotSet(network_id=network['id'])
 
     #check if the result contains all the networks
     #we are looking for
@@ -2140,7 +2180,7 @@ def network_get_all_by_uuids(context, network_uuids, project_id=None):
                 found = True
                 break
         if not found:
-            if project_id:
+            if project_only:
                 raise exception.NetworkNotFoundForProject(
                       network_uuid=network_uuid, project_id=context.project_id)
             raise exception.NetworkNotFound(network_id=network_uuid)
@@ -2894,7 +2934,7 @@ def volume_create(context, values):
     with session.begin():
         volume_ref.save(session=session)
 
-    return volume_ref
+    return volume_get(context, values['id'], session=session)
 
 
 @require_admin_context
@@ -3490,11 +3530,17 @@ def security_group_create(context, values, session=None):
 
 
 def security_group_ensure_default(context, session=None):
-    """Ensure default security group exists for a project_id."""
+    """Ensure default security group exists for a project_id.
+
+    Returns a tuple with the first element being a bool indicating
+    if the default security group previously existed. Second
+    element is the dict used to create the default security group.
+    """
     try:
         default_group = security_group_get_by_name(context,
                 context.project_id, 'default',
                 columns_to_join=[], session=session)
+        return (True, default_group)
     except exception.NotFound:
         values = {'name': 'default',
                   'description': 'default',
@@ -3502,7 +3548,7 @@ def security_group_ensure_default(context, session=None):
                   'project_id': context.project_id}
         default_group = security_group_create(context, values,
                 session=session)
-    return default_group
+        return (False, default_group)
 
 
 @require_context
@@ -4813,14 +4859,9 @@ def aggregate_create(context, values, metadata=None):
                                      models.Aggregate.name,
                                      values['name'],
                                      session=session,
-                                     read_deleted='yes').first()
+                                     read_deleted='no').first()
     if not aggregate:
         aggregate = models.Aggregate()
-        aggregate.update(values)
-        aggregate.save(session=session)
-    elif aggregate.deleted:
-        values['deleted'] = False
-        values['deleted_at'] = None
         aggregate.update(values)
         aggregate.save(session=session)
     else:
@@ -4906,6 +4947,14 @@ def aggregate_delete(context, aggregate_id):
                       'updated_at': literal_column('updated_at')})
     else:
         raise exception.AggregateNotFound(aggregate_id=aggregate_id)
+
+    #Delete Metadata
+    rows = model_query(context,
+                       models.AggregateMetadata).\
+                       filter_by(aggregate_id=aggregate_id).\
+                       update({'deleted': True,
+                      'deleted_at': timeutils.utcnow(),
+                      'updated_at': literal_column('updated_at')})
 
 
 @require_admin_context

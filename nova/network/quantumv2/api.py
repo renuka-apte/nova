@@ -220,6 +220,18 @@ class API(base.Base):
                 id_str = id_str and id_str + ', ' + _id or _id
             raise exception.NetworkNotFound(network_id=id_str)
 
+    def _get_instance_uuids_by_ip(self, context, address):
+        """Retrieve instance uuids associated with the given ip address.
+
+        :returns: A list of dicts containing the uuids keyed by 'instance_uuid'
+                  e.g. [{'instance_uuid': uuid}, ...]
+        """
+        search_opts = {"fixed_ips": 'ip_address=%s' % address}
+        data = quantumv2.get_client(context).list_ports(**search_opts)
+        ports = data.get('ports', [])
+        return [{'instance_uuid': port['device_id']} for port in ports
+                if port['device_id']]
+
     def get_instance_uuids_by_ip_filter(self, context, filters):
         """Return a list of dicts in the form of
         [{'instance_uuid': uuid}] that matched the ip filter.
@@ -232,12 +244,7 @@ class API(base.Base):
         if ip[-1] == '$':
             ip = ip[:-1]
         ip = ip.replace('\\.', '.')
-        search_opts = {"fixed_ips": {'ip_address': ip}}
-        data = quantumv2.get_client(context).list_ports(**search_opts)
-        ports = data.get('ports', [])
-
-        return [{'instance_uuid': port['device_id']} for port in ports
-                if port['device_id']]
+        return self._get_instance_uuids_by_ip(context, ip)
 
     def trigger_security_group_members_refresh(self, context, instance_ref):
 
@@ -277,22 +284,29 @@ class API(base.Base):
         raise NotImplementedError()
 
     def get_fixed_ip_by_address(self, context, address):
-        raise NotImplementedError()
+        uuid_maps = self._get_instance_uuids_by_ip(context, address)
+        if len(uuid_maps) == 1:
+            return uuid_maps[0]
+        elif not uuid_maps:
+            raise exception.FixedIpNotFoundForAddress(address=address)
+        else:
+            raise exception.FixedIpAssociatedWithMultipleInstances(
+                address=address)
 
     def get_floating_ip(self, context, id):
         raise NotImplementedError()
 
     def get_floating_ip_pools(self, context):
-        raise NotImplementedError()
+        return []
 
     def get_floating_ip_by_address(self, context, address):
         raise NotImplementedError()
 
     def get_floating_ips_by_project(self, context):
-        raise NotImplementedError()
+        return []
 
     def get_floating_ips_by_fixed_address(self, context, fixed_address):
-        raise NotImplementedError()
+        return []
 
     def get_instance_id_by_floating_address(self, context, address):
         raise NotImplementedError()
@@ -367,6 +381,13 @@ class API(base.Base):
         """Return the subnets for a given port."""
 
         fixed_ips = port['fixed_ips']
+        # No fixed_ips for the port means there is no subnet associated
+        # with the network the port is created on.
+        # Since list_subnets(id=[]) returns all subnets visible for the
+        # current tenant, returned subnets may contain subnets which is not
+        # related to the port. To avoid this, the method returns here.
+        if not fixed_ips:
+            return []
         search_opts = {'id': [ip['subnet_id'] for ip in fixed_ips]}
         data = quantumv2.get_client(context).list_subnets(**search_opts)
         ipam_subnets = data.get('subnets', [])

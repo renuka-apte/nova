@@ -63,7 +63,6 @@ import optparse
 import os
 import sys
 
-
 # If ../nova/__init__.py exists, add ../ to Python search path, so that
 # it will override what happens to be installed in /usr/(local/)lib/python...
 POSSIBLE_TOPDIR = os.path.normpath(os.path.join(os.path.abspath(sys.argv[0]),
@@ -92,7 +91,6 @@ from nova import quota
 from nova.scheduler import rpcapi as scheduler_rpcapi
 from nova import utils
 from nova import version
-from nova.volume import volume_types
 
 FLAGS = flags.FLAGS
 flags.DECLARE('flat_network_bridge', 'nova.network.manager')
@@ -116,13 +114,13 @@ def args(*args, **kwargs):
 
 
 def param2id(object_id):
-    """Helper function to convert various id types to internal id.
+    """Helper function to convert various volume id types to internal id.
     args: [object_id], e.g. 'vol-0000000a' or 'volume-0000000a' or '10'
     """
     if '-' in object_id:
-        return ec2utils.ec2_id_to_id(object_id)
+        return ec2utils.ec2_vol_id_to_uuid(object_id)
     else:
-        return int(object_id)
+        return object_id
 
 
 class VpnCommands(object):
@@ -229,7 +227,7 @@ class ProjectCommands(object):
         ctxt = context.get_admin_context()
         if key:
             if value.lower() == 'unlimited':
-                value = None
+                value = -1
             try:
                 db.quota_update(ctxt, project_id, key, value)
             except exception.ProjectQuotaNotFound:
@@ -396,12 +394,11 @@ class FloatingIpCommands(object):
     @args('--ip_range', dest="ip_range", metavar='<range>', help='IP range')
     def delete(self, ip_range):
         """Deletes floating ips by range"""
-        for address in self.address_to_hosts(ip_range):
-            try:
-                db.floating_ip_destroy(context.get_admin_context(),
-                                       str(address))
-            except exception.FloatingIpNotFoundForAddress as ex:
-                print "Warning: %s" % ex
+        admin_context = context.get_admin_context()
+
+        ips = ({'address': str(address)}
+               for address in self.address_to_hosts(ip_range))
+        db.floating_ip_bulk_destroy(admin_context, ips)
 
     @args('--host', dest="host", metavar='<host>', help='Host')
     def list(self, host=None):
@@ -784,8 +781,17 @@ class VolumeCommands(object):
     @args('--volume', dest='volume_id', metavar='<volume id>',
             help='Volume ID')
     def delete(self, volume_id):
-        """Delete a volume, bypassing the check that it
+        """WARNING: This method is deprecated and will be removed.
+        Delete a volume, bypassing the check that it
         must be available."""
+
+        print(_("\"nova-manage volume delete\" is deprecated; use"
+                " the os-reset_status os-admin-actions extension instead."))
+        if 'cinder' in FLAGS.volume_api_class:
+            print(_("\"nova-manage volume delete\" only valid "
+                    "when using nova-volume service"))
+            sys.exit(1)
+
         ctxt = context.get_admin_context()
         volume = db.volume_get(ctxt, param2id(volume_id))
         host = volume['host']
@@ -793,7 +799,7 @@ class VolumeCommands(object):
         if not host:
             print "Volume not yet assigned to host."
             print "Deleting volume from database and skipping rpc."
-            db.volume_destroy(ctxt, param2id(volume_id))
+            db.volume_destroy(ctxt, volume_id)
             return
 
         if volume['status'] == 'in-use':
@@ -812,8 +818,15 @@ class VolumeCommands(object):
         """Re-attach a volume that has previously been attached
         to an instance.  Typically called after a compute host
         has been rebooted."""
+
+        if 'cinder' in FLAGS.volume_api_class:
+            print(_("\"nova-manage volume reattach\" only valid "
+                    "when using nova-volume service"))
+            sys.exit(1)
+
         ctxt = context.get_admin_context()
         volume = db.volume_get(ctxt, param2id(volume_id))
+
         if not volume['instance_id']:
             print "volume is not attached to an instance"
             return
@@ -851,7 +864,7 @@ class InstanceTypeCommands(object):
             help='rxtx_factor')
     @args('--is_public', dest="is_public", metavar='<is_public>',
             help='Make flavor accessible to the public')
-    def create(self, name, memory, vcpus, root_gb, ephemeral_gb, flavorid,
+    def create(self, name, memory, vcpus, root_gb, ephemeral_gb, flavorid=None,
                swap=0, rxtx_factor=1, is_public=True):
         """Creates instance types / flavors"""
         try:

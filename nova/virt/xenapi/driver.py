@@ -38,6 +38,7 @@ A driver for XenServer or Xen Cloud Platform.
 """
 
 import contextlib
+import cPickle as pickle
 import time
 import urlparse
 import xmlrpclib
@@ -182,13 +183,15 @@ class XenAPIDriver(driver.ComputeDriver):
         # TODO(Vek): Need to pass context in for access to auth_token
         self._vmops.confirm_migration(migration, instance, network_info)
 
-    def finish_revert_migration(self, instance, network_info):
+    def finish_revert_migration(self, instance, network_info,
+                                block_device_info=None):
         """Finish reverting a resize, powering back on the instance"""
         # NOTE(vish): Xen currently does not use network info.
         self._vmops.finish_revert_migration(instance)
 
     def finish_migration(self, context, migration, instance, disk_info,
-                         network_info, image_meta, resize_instance=False):
+                         network_info, image_meta, resize_instance=False,
+                         block_device_info=None):
         """Completes a resize, turning on the migrated instance"""
         self._vmops.finish_migration(context, migration, instance, disk_info,
                                      network_info, image_meta, resize_instance)
@@ -229,7 +232,8 @@ class XenAPIDriver(driver.ComputeDriver):
         self._vmops.unpause(instance)
 
     def migrate_disk_and_power_off(self, context, instance, dest,
-                                   instance_type, network_info):
+                                   instance_type, network_info,
+                                   block_device_info=None):
         """Transfers the VHD of a running instance to another host, then shuts
         off the instance copies over the COW disk"""
         # NOTE(vish): Xen currently does not use network info.
@@ -709,6 +713,11 @@ class XenAPISession(object):
             return self._unwrap_plugin_exceptions(
                                  session.xenapi.host.call_plugin,
                                  host, plugin, fn, args)
+
+    def call_plugin_serialized(self, plugin, fn, *args, **kwargs):
+        params = {'params': pickle.dumps(dict(args=args, kwargs=kwargs))}
+        rv = self.call_plugin(plugin, fn, params)
+        return pickle.loads(rv)
 
     def _create_session(self, url):
         """Stubout point. This can be replaced with a mock session."""

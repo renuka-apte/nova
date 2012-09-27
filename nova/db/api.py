@@ -274,6 +274,11 @@ def floating_ip_bulk_create(context, ips):
     return IMPL.floating_ip_bulk_create(context, ips)
 
 
+def floating_ip_bulk_destroy(context, ips):
+    """Destroy a lot of floating ips from the values dictionary."""
+    return IMPL.floating_ip_bulk_destroy(context, ips)
+
+
 def floating_ip_create(context, values):
     """Create a floating ip from the values dictionary."""
     return IMPL.floating_ip_create(context, values)
@@ -582,10 +587,11 @@ def instance_get_all(context, columns_to_join=None):
 
 
 def instance_get_all_by_filters(context, filters, sort_key='created_at',
-                                sort_dir='desc'):
+                                sort_dir='desc', limit=None, marker=None):
     """Get all instances that match all filters."""
     return IMPL.instance_get_all_by_filters(context, filters, sort_key,
-                                            sort_dir)
+                                            sort_dir, limit=limit,
+                                            marker=marker)
 
 
 def instance_get_active_by_window(context, begin, end=None, project_id=None,
@@ -804,9 +810,9 @@ def network_disassociate(context, network_id):
     return IMPL.network_disassociate(context, network_id)
 
 
-def network_get(context, network_id):
+def network_get(context, network_id, project_only="allow_none"):
     """Get a network or raise if it does not exist."""
-    return IMPL.network_get(context, network_id)
+    return IMPL.network_get(context, network_id, project_only=project_only)
 
 
 def network_get_all(context):
@@ -814,9 +820,11 @@ def network_get_all(context):
     return IMPL.network_get_all(context)
 
 
-def network_get_all_by_uuids(context, network_uuids, project_id=None):
+def network_get_all_by_uuids(context, network_uuids,
+                             project_only="allow_none"):
     """Return networks by ids."""
-    return IMPL.network_get_all_by_uuids(context, network_uuids, project_id)
+    return IMPL.network_get_all_by_uuids(context, network_uuids,
+                                         project_only=project_only)
 
 
 # pylint: disable=C0103
@@ -1280,7 +1288,12 @@ def security_group_create(context, values):
 
 
 def security_group_ensure_default(context):
-    """Ensure default security group exists for a project_id."""
+    """Ensure default security group exists for a project_id.
+
+    Returns a tuple with the first element being a bool indicating
+    if the default security group previously existed. Second
+    element is the dict used to create the default security group.
+    """
     return IMPL.security_group_ensure_default(context)
 
 

@@ -99,7 +99,7 @@ class ComputeRpcAPITestCase(test.TestCase):
 
     def test_add_aggregate_host(self):
         self._test_compute_api('add_aggregate_host', 'cast', aggregate_id='id',
-                host_param='host', host='host')
+                host_param='host', host='host', slave_info={}, version='2.2')
 
     def test_add_fixed_ip_to_instance(self):
         self._test_compute_api('add_fixed_ip_to_instance', 'cast',
@@ -227,7 +227,7 @@ class ComputeRpcAPITestCase(test.TestCase):
                 instance=self.fake_instance, new_pass='pass',
                 injected_files='files', image_ref='ref',
                 orig_image_ref='orig_ref',
-                orig_sys_metadata='orig_sys_metadata')
+                orig_sys_metadata='orig_sys_metadata', version='2.1')
 
     def test_reserve_block_device_name(self):
         self._test_compute_api('reserve_block_device_name', 'call',
@@ -249,7 +249,8 @@ class ComputeRpcAPITestCase(test.TestCase):
 
     def test_remove_aggregate_host(self):
         self._test_compute_api('remove_aggregate_host', 'cast',
-                aggregate_id='id', host_param='host', host='host')
+                aggregate_id='id', host_param='host', host='host',
+                slave_info={}, version='2.2')
 
     def test_remove_fixed_ip_from_instance(self):
         self._test_compute_api('remove_fixed_ip_from_instance', 'cast',

@@ -44,8 +44,18 @@ class SchedulerAPI(nova.openstack.common.rpc.proxy.RpcProxy):
         1.7 - Add create_volume() method, remove topic from live_migration()
 
         2.0 - Remove 1.x backwards compat
+        2.1 - Add image_id to create_volume()
+        2.2 - Remove reservations argument to create_volume()
     '''
 
+    #
+    # NOTE(russellb): This is the default minimum version that the server
+    # (manager) side must implement unless otherwise specified using a version
+    # argument to self.call()/cast()/etc. here.  It should be left as X.0 where
+    # X is the current major API version (1.0, 2.0, ...).  For more information
+    # about rpc API versioning, see the docs in
+    # openstack/common/rpc/dispatcher.py.
+    #
     BASE_RPC_API_VERSION = '2.0'
 
     def __init__(self):
@@ -85,11 +95,12 @@ class SchedulerAPI(nova.openstack.common.rpc.proxy.RpcProxy):
                 disk_over_commit=disk_over_commit, instance=instance_p,
                 dest=dest))
 
-    def create_volume(self, ctxt, volume_id, snapshot_id, reservations):
+    def create_volume(self, ctxt, volume_id, snapshot_id, image_id):
         self.cast(ctxt,
                   self.make_msg('create_volume',
                                 volume_id=volume_id, snapshot_id=snapshot_id,
-                                reservations=reservations))
+                                image_id=image_id),
+                  version='2.2')
 
     def update_service_capabilities(self, ctxt, service_name, host,
             capabilities):

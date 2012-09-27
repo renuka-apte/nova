@@ -189,6 +189,9 @@ class ExtensionManager(object):
         for _alias, ext in self.sorted_ext_list:
             yield ext
 
+    def is_loaded(self, alias):
+        return alias in self.extensions
+
     def register(self, ext):
         # Do nothing if the extension doesn't check out
         if not self._check_extension(ext):
@@ -223,11 +226,12 @@ class ExtensionManager(object):
         controller_exts = []
         for ext in self.sorted_extensions():
             try:
-                controller_exts.extend(ext.get_controller_extensions())
+                get_ext_method = ext.get_controller_extensions
             except AttributeError:
                 # NOTE(Vek): Extensions aren't required to have
                 # controller extensions
-                pass
+                continue
+            controller_exts.extend(get_ext_method())
         return controller_exts
 
     def _check_extension(self, extension):

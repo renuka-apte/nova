@@ -2,6 +2,7 @@
 distribute>=0.6.24
 
 coverage
+python-ldap
 mox==0.5.3
 nose
 openstack.nose_plugin>=0.7
@@ -10,3 +11,4 @@ pep8==1.1
 pylint==0.25.2
 sphinx>=1.1.2
 feedparser
+python-cinderclient

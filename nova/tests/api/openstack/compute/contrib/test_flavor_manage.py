@@ -25,11 +25,13 @@ from nova import test
 from nova.tests.api.openstack import fakes
 
 
-def fake_get_instance_type_by_flavor_id(flavorid):
+def fake_get_instance_type_by_flavor_id(flavorid, read_deleted='yes'):
     if flavorid == 'failtest':
         raise exception.NotFound("Not found sucka!")
     elif not str(flavorid) == '1234':
         raise Exception("This test expects flavorid 1234, not %s" % flavorid)
+    if read_deleted != 'no':
+        raise test.TestingException("Should not be reading deleted")
 
     return {
         'root_gb': 1,
@@ -58,7 +60,10 @@ def fake_destroy(flavorname):
 
 def fake_create(name, memory_mb, vcpus, root_gb, ephemeral_gb,
                 flavorid, swap, rxtx_factor, is_public):
-    newflavor = fake_get_instance_type_by_flavor_id(flavorid)
+    if flavorid is None:
+        flavorid = 1234
+    newflavor = fake_get_instance_type_by_flavor_id(flavorid,
+                                                    read_deleted="no")
 
     newflavor["name"] = name
     newflavor["memory_mb"] = int(memory_mb)
@@ -151,6 +156,30 @@ class FlavorManageTest(test.TestCase):
         req.headers['Content-Type'] = 'application/json'
         req.method = 'POST'
         req.body = jsonutils.dumps(flavor)
+        res = req.get_response(fakes.wsgi_app())
+        body = jsonutils.loads(res.body)
+        for key in expected["flavor"]:
+            self.assertEquals(body["flavor"][key], expected["flavor"][key])
+
+    def test_create_without_flavorid(self):
+        expected = {
+            "flavor": {
+                "name": "test",
+                "ram": 512,
+                "vcpus": 2,
+                "disk": 1,
+                "OS-FLV-EXT-DATA:ephemeral": 1,
+                "swap": 512,
+                "rxtx_factor": 1,
+                "os-flavor-access:is_public": True,
+            }
+        }
+
+        url = '/v2/fake/flavors'
+        req = webob.Request.blank(url)
+        req.headers['Content-Type'] = 'application/json'
+        req.method = 'POST'
+        req.body = jsonutils.dumps(expected)
         res = req.get_response(fakes.wsgi_app())
         body = jsonutils.loads(res.body)
         for key in expected["flavor"]:

@@ -136,6 +136,7 @@ class API(base.Base):
         self.network_api = network_api or network.API()
         self.volume_api = volume_api or volume.API()
         self.security_group_api = security_group_api or SecurityGroupAPI()
+        self.sgh = importutils.import_object(FLAGS.security_group_handler)
         self.consoleauth_rpcapi = consoleauth_rpcapi.ConsoleAuthAPI()
         self.scheduler_rpcapi = scheduler_rpcapi.SchedulerAPI()
         self.compute_rpcapi = compute_rpcapi.ComputeAPI()
@@ -862,7 +863,7 @@ class API(base.Base):
                                               cores=-instance['vcpus'],
                                               ram=-instance['memory_mb'])
 
-            if not instance['host']:
+            if not host:
                 # Just update database, nothing else we can do
                 constraint = self.db.constraint(host=self.db.equal_any(host))
                 try:
@@ -879,8 +880,12 @@ class API(base.Base):
             if instance['vm_state'] == vm_states.RESIZED:
                 # If in the middle of a resize, use confirm_resize to
                 # ensure the original instance is cleaned up too
-                migration_ref = self.db.migration_get_by_instance_and_status(
-                        context, instance['uuid'], 'finished')
+                get_migration = self.db.migration_get_by_instance_and_status
+                try:
+                    migration_ref = get_migration(context.elevated(),
+                            instance['uuid'], 'finished')
+                except exception.MigrationNotFoundByStatus:
+                    migration_ref = None
                 if migration_ref:
                     src_host = migration_ref['source_compute']
                     # Call since this can race with the terminate_instance.
@@ -901,7 +906,20 @@ class API(base.Base):
                             host=src_host, cast=False,
                             reservations=downsize_reservations)
 
-            self.compute_rpcapi.terminate_instance(context, instance)
+            services = self.db.service_get_all_compute_by_host(
+                    context.elevated(), instance['host'])
+            is_up = False
+            #Note(jogo): db allows for multiple compute services per host
+            for service in services:
+                if utils.service_is_up(service):
+                    is_up = True
+                    self.compute_rpcapi.terminate_instance(context, instance)
+                    break
+            if is_up == False:
+                # If compute node isn't up, just delete from DB
+                LOG.warning(_('host for instance is down, deleting from '
+                        'database'), instance=instance)
+                self.db.instance_destroy(context, instance['uuid'])
 
             if reservations:
                 QUOTAS.commit(context, reservations)
@@ -1013,7 +1031,7 @@ class API(base.Base):
         return inst
 
     def get_all(self, context, search_opts=None, sort_key='created_at',
-                sort_dir='desc'):
+                sort_dir='desc', limit=None, marker=None):
         """Get all instances filtered by one of the given parameters.
 
         If there is no filter and the context is an admin, it will retrieve
@@ -1090,7 +1108,9 @@ class API(base.Base):
                         return []
 
         inst_models = self._get_instances_by_filters(context, filters,
-                                                     sort_key, sort_dir)
+                                                     sort_key, sort_dir,
+                                                     limit=limit,
+                                                     marker=marker)
 
         # Convert the models to dictionaries
         instances = []
@@ -1102,7 +1122,10 @@ class API(base.Base):
 
         return instances
 
-    def _get_instances_by_filters(self, context, filters, sort_key, sort_dir):
+    def _get_instances_by_filters(self, context, filters,
+                                  sort_key, sort_dir,
+                                  limit=None,
+                                  marker=None):
         if 'ip6' in filters or 'ip' in filters:
             res = self.network_api.get_instance_uuids_by_ip_filter(context,
                                                                    filters)
@@ -1111,8 +1134,9 @@ class API(base.Base):
             uuids = set([r['instance_uuid'] for r in res])
             filters['uuid'] = uuids
 
-        return self.db.instance_get_all_by_filters(context, filters, sort_key,
-                                                   sort_dir)
+        return self.db.instance_get_all_by_filters(context, filters,
+                                                   sort_key, sort_dir,
+                                                   limit=limit, marker=marker)
 
     @wrap_check_policy
     @check_instance_state(vm_state=[vm_states.ACTIVE, vm_states.STOPPED])
@@ -1214,6 +1238,84 @@ class API(base.Base):
                 image_id=recv_meta['id'], image_type=image_type,
                 backup_type=backup_type, rotation=rotation)
         return recv_meta
+
+    @check_instance_state(vm_state=[vm_states.ACTIVE, vm_states.STOPPED])
+    def snapshot_volume_backed(self, context, instance, image_meta, name,
+                               extra_properties=None):
+        """Snapshot the given volume-backed instance.
+
+        :param instance: nova.db.sqlalchemy.models.Instance
+        :param image_meta: metadata for the new image
+        :param name: name of the backup or snapshot
+        :param extra_properties: dict of extra image properties to include
+
+        :returns: the new image metadata
+        """
+        image_meta['name'] = name
+        properties = image_meta['properties']
+        if instance['root_device_name']:
+            properties['root_device_name'] = instance['root_device_name']
+        properties.update(extra_properties or {})
+
+        bdms = self.get_instance_bdms(context, instance)
+
+        mapping = []
+        for bdm in bdms:
+            if bdm.no_device:
+                continue
+            m = {}
+            for attr in ('device_name', 'snapshot_id', 'volume_id',
+                         'volume_size', 'delete_on_termination', 'no_device',
+                         'virtual_name'):
+                val = getattr(bdm, attr)
+                if val is not None:
+                    m[attr] = val
+
+            volume_id = m.get('volume_id')
+            if volume_id:
+                # create snapshot based on volume_id
+                volume = self.volume_api.get(context, volume_id)
+                # NOTE(yamahata): Should we wait for snapshot creation?
+                #                 Linux LVM snapshot creation completes in
+                #                 short time, it doesn't matter for now.
+                name = _('snapshot for %s') % image_meta['name']
+                snapshot = self.volume_api.create_snapshot_force(
+                    context, volume, name, volume['display_description'])
+                m['snapshot_id'] = snapshot['id']
+                del m['volume_id']
+
+            if m:
+                mapping.append(m)
+
+        for m in block_device.mappings_prepend_dev(properties.get('mappings',
+                                                                  [])):
+            virtual_name = m['virtual']
+            if virtual_name in ('ami', 'root'):
+                continue
+
+            assert block_device.is_swap_or_ephemeral(virtual_name)
+            device_name = m['device']
+            if device_name in [b['device_name'] for b in mapping
+                               if not b.get('no_device', False)]:
+                continue
+
+            # NOTE(yamahata): swap and ephemeral devices are specified in
+            #                 AMI, but disabled for this instance by user.
+            #                 So disable those device by no_device.
+            mapping.append({'device_name': device_name, 'no_device': True})
+
+        if mapping:
+            properties['block_device_mapping'] = mapping
+
+        for attr in ('status', 'location', 'id'):
+            image_meta.pop(attr, None)
+
+        # the new image is simply a bucket of properties (particularly the
+        # block device mapping, kernel and ramdisk IDs) with no image data,
+        # hence the zero size
+        image_meta['size'] = 0
+
+        return self.image_service.create(context, image_meta, data='')
 
     def _get_minram_mindisk_params(self, context, instance):
         try:
@@ -1337,9 +1439,6 @@ class API(base.Base):
         context = context.elevated()
         migration_ref = self.db.migration_get_by_instance_and_status(context,
                 instance['uuid'], 'finished')
-        if not migration_ref:
-            raise exception.MigrationNotFoundByStatus(
-                    instance_id=instance['uuid'], status='finished')
 
         # reverse quota reservation for increased resource usage
         deltas = self._reverse_upsize_quota_delta(context, migration_ref)
@@ -1364,9 +1463,6 @@ class API(base.Base):
         context = context.elevated()
         migration_ref = self.db.migration_get_by_instance_and_status(context,
                 instance['uuid'], 'finished')
-        if not migration_ref:
-            raise exception.MigrationNotFoundByStatus(
-                    instance_id=instance['uuid'], status='finished')
 
         # reserve quota only for any decrease in resource usage
         deltas = self._downsize_quota_delta(context, migration_ref)
@@ -1495,11 +1591,8 @@ class API(base.Base):
         # NOTE(markwash): look up the image early to avoid auth problems later
         image = self.image_service.show(context, instance['image_ref'])
 
-        current_memory_mb = current_instance_type['memory_mb']
-        new_memory_mb = new_instance_type['memory_mb']
-
-        if (current_memory_mb == new_memory_mb) and flavor_id:
-            raise exception.CannotResizeToSameSize()
+        if same_instance_type and flavor_id:
+            raise exception.CannotResizeToSameFlavor()
 
         # ensure there is sufficient headroom for upsizes
         deltas = self._upsize_quota_delta(context, new_instance_type,
@@ -1757,6 +1850,7 @@ class API(base.Base):
 
         volume = self.volume_api.get(context, volume_id)
         self.volume_api.check_detach(context, volume)
+        self.volume_api.begin_detaching(context, volume)
 
         self.compute_rpcapi.detach_volume(context, instance=instance,
                 volume_id=volume_id)
@@ -1853,8 +1947,13 @@ class API(base.Base):
     def live_migrate(self, context, instance, block_migration,
                      disk_over_commit, host):
         """Migrate a server lively to a new host."""
-        LOG.debug(_("Going to try to live migrate instance"),
-                  instance=instance)
+        LOG.debug(_("Going to try to live migrate instance to %s"),
+                  host, instance=instance)
+
+        instance = self.update(context, instance,
+                               task_state=task_states.MIGRATING,
+                               expected_task_state=None)
+
         self.scheduler_rpcapi.live_migration(context, block_migration,
                 disk_over_commit, instance, host)
 
@@ -2131,7 +2230,9 @@ class SecurityGroupAPI(base.Base):
 
         :param context: the security context
         """
-        self.db.security_group_ensure_default(context)
+        existed, group = self.db.security_group_ensure_default(context)
+        if not existed:
+            self.sgh.trigger_security_group_create_refresh(context, group)
 
     def create(self, context, name, description):
         try:
@@ -2180,7 +2281,8 @@ class SecurityGroupAPI(base.Base):
             else:
                 raise
 
-    def list(self, context, names=None, ids=None, project=None):
+    def list(self, context, names=None, ids=None, project=None,
+             search_opts=None):
         self.ensure_default(context)
 
         groups = []
@@ -2195,7 +2297,14 @@ class SecurityGroupAPI(base.Base):
                     groups.append(self.db.security_group_get(context, id))
 
         elif context.is_admin:
-            groups = self.db.security_group_get_all(context)
+            # TODO(eglynn): support a wider set of search options than just
+            # all_tenants, at least include the standard filters defined for
+            # the EC2 DescribeSecurityGroups API for the non-admin case also
+            if (search_opts and 'all_tenants' in search_opts):
+                groups = self.db.security_group_get_all(context)
+            else:
+                groups = self.db.security_group_get_by_project(context,
+                                                               project)
 
         elif project:
             groups = self.db.security_group_get_by_project(context, project)

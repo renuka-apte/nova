@@ -21,8 +21,9 @@
 Scheduler Service
 """
 
-import functools
+import sys
 
+from nova.compute import utils as compute_utils
 from nova.compute import vm_states
 from nova import db
 from nova import exception
@@ -34,7 +35,6 @@ from nova.openstack.common import excutils
 from nova.openstack.common import importutils
 from nova.openstack.common import log as logging
 from nova.openstack.common.notifier import api as notifier
-from nova.openstack.common.rpc import common as rpc_common
 from nova import quota
 
 
@@ -53,7 +53,7 @@ QUOTAS = quota.QUOTAS
 class SchedulerManager(manager.Manager):
     """Chooses a host to run instances on."""
 
-    RPC_API_VERSION = '2.0'
+    RPC_API_VERSION = '2.2'
 
     def __init__(self, scheduler_driver=None, *args, **kwargs):
         if not scheduler_driver:
@@ -69,15 +69,16 @@ class SchedulerManager(manager.Manager):
         self.driver.update_service_capabilities(service_name, host,
                 capabilities)
 
-    def create_volume(self, context, volume_id, snapshot_id, reservations):
+    def create_volume(self, context, volume_id, snapshot_id,
+                      reservations=None, image_id=None):
         try:
             self.driver.schedule_create_volume(
-                context, volume_id, snapshot_id, reservations)
+                context, volume_id, snapshot_id, image_id)
         except Exception as ex:
             with excutils.save_and_reraise_exception():
-                self._set_vm_state_and_notify('create_volume',
-                                             {'vm_state': vm_states.ERROR},
-                                             context, ex, {})
+                LOG.warning(_("Failed to schedule create_volume: %(ex)s") %
+                            locals())
+                db.volume_update(context, volume_id, {'status': 'error'})
 
     def live_migration(self, context, instance, dest,
                        block_migration, disk_over_commit):
@@ -104,12 +105,14 @@ class SchedulerManager(manager.Manager):
         except exception.NoValidHost as ex:
             # don't re-raise
             self._set_vm_state_and_notify('run_instance',
-                                         {'vm_state': vm_states.ERROR},
+                                         {'vm_state': vm_states.ERROR,
+                                          'task_state': None},
                                           context, ex, request_spec)
         except Exception as ex:
             with excutils.save_and_reraise_exception():
                 self._set_vm_state_and_notify('run_instance',
-                                             {'vm_state': vm_states.ERROR},
+                                             {'vm_state': vm_states.ERROR,
+                                              'task_state': None},
                                              context, ex, request_spec)
 
     def prep_resize(self, context, image, request_spec, filter_properties,
@@ -139,7 +142,8 @@ class SchedulerManager(manager.Manager):
         except Exception as ex:
             with excutils.save_and_reraise_exception():
                 self._set_vm_state_and_notify('prep_resize',
-                                             {'vm_state': vm_states.ERROR},
+                                             {'vm_state': vm_states.ERROR,
+                                              'task_state': None},
                                              context, ex, request_spec)
                 if reservations:
                     QUOTAS.rollback(context, reservations)
@@ -162,34 +166,36 @@ class SchedulerManager(manager.Manager):
 
         vm_state = updates['vm_state']
         properties = request_spec.get('instance_properties', {})
-        # FIXME(comstud): We really need to move error handling closer
-        # to where the errors occur so we can deal with errors on
-        # individual instances when scheduling multiple.
-        if 'instance_uuids' in request_spec:
-            instance_uuid = request_spec['instance_uuids'][0]
-        else:
-            instance_uuid = properties.get('uuid', {})
+        # NOTE(vish): We shouldn't get here unless we have a catastrophic
+        #             failure, so just set all instances to error. if uuid
+        #             is not set, instance_uuids will be set to [None], this
+        #             is solely to preserve existing behavior and can
+        #             be removed along with the 'if instance_uuid:' if we can
+        #             verify that uuid is always set.
+        uuids = [properties.get('uuid')]
+        for instance_uuid in request_spec.get('instance_uuids') or uuids:
+            if instance_uuid:
+                compute_utils.add_instance_fault_from_exc(context,
+                        instance_uuid, ex, sys.exc_info())
+                state = vm_state.upper()
+                LOG.warning(_('Setting instance to %(state)s state.'),
+                            locals(), instance_uuid=instance_uuid)
 
-        if instance_uuid:
-            state = vm_state.upper()
-            LOG.warning(_('Setting instance to %(state)s state.'), locals(),
-                        instance_uuid=instance_uuid)
+                # update instance state and notify on the transition
+                (old_ref, new_ref) = db.instance_update_and_get_original(
+                        context, instance_uuid, updates)
+                notifications.send_update(context, old_ref, new_ref,
+                        service="scheduler")
 
-            # update instance state and notify on the transition
-            (old_ref, new_ref) = db.instance_update_and_get_original(context,
-                    instance_uuid, updates)
-            notifications.send_update(context, old_ref, new_ref,
-                    service="scheduler")
+            payload = dict(request_spec=request_spec,
+                           instance_properties=properties,
+                           instance_id=instance_uuid,
+                           state=vm_state,
+                           method=method,
+                           reason=ex)
 
-        payload = dict(request_spec=request_spec,
-                       instance_properties=properties,
-                       instance_id=instance_uuid,
-                       state=vm_state,
-                       method=method,
-                       reason=ex)
-
-        notifier.notify(context, notifier.publisher_id("scheduler"),
-                        'scheduler.' + method, notifier.ERROR, payload)
+            notifier.notify(context, notifier.publisher_id("scheduler"),
+                            'scheduler.' + method, notifier.ERROR, payload)
 
     # NOTE (masumotok) : This method should be moved to nova.api.ec2.admin.
     # Based on bexar design summit discussion,

@@ -50,7 +50,7 @@
 A fake XenAPI SDK.
 """
 
-
+import pickle
 import random
 import uuid
 from xml.sax import saxutils
@@ -561,12 +561,15 @@ class SessionBase(object):
     def _plugin_noop(self, method, args):
         return ''
 
-    _plugin_glance_upload_vhd = _plugin_noop
+    def _plugin_pickle_noop(self, method, args):
+        return pickle.dumps(None)
+
+    _plugin_glance_upload_vhd = _plugin_pickle_noop
     _plugin_kernel_copy_vdi = _plugin_noop
     _plugin_kernel_create_kernel_ramdisk = _plugin_noop
     _plugin_kernel_remove_kernel_ramdisk = _plugin_noop
     _plugin_migration_move_vhds_into_sr = _plugin_noop
-    _plugin_migration_transfer_vhd = _plugin_noop
+    _plugin_migration_transfer_vhd = _plugin_pickle_noop
 
     def _plugin_xenhost_host_data(self, method, args):
             return jsonutils.dumps({'host_memory': {'total': 10,
@@ -632,15 +635,7 @@ class SessionBase(object):
         pass
 
     def host_migrate_receive(self, session, destref, nwref, options):
-        # The dictionary below represents the true keys, as
-        # returned by a destination host, but fake values.
-        return {'xenops': 'http://localhost/services/xenops?'
-                'session_id=OpaqueRef:81d00b97-b205-b34d-924e-6f9597854cc0',
-                'host': 'OpaqueRef:5e4a3dd1-b71c-74ba-bbc6-58ee9ff6a889',
-                'master': 'http://localhost/',
-                'session_id': 'OpaqueRef:81d00b97-b205-b34d-924e-6f9597854cc0',
-                'SM': 'http://localhost/services/SM?'
-                'session_id=OpaqueRef:81d00b97-b205-b34d-924e-6f9597854cc0'}
+        return "fake_migrate_data"
 
     def VM_assert_can_migrate(self, session, vmref, migrate_data, live,
                               vdi_map, vif_map, options):

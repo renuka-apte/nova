@@ -19,7 +19,6 @@
 Management class for VM-related functions (spawn, reboot, etc).
 """
 
-import cPickle as pickle
 import functools
 import itertools
 import time
@@ -190,7 +189,8 @@ class VMOps(object):
         self._start(instance, vm_ref)
 
     def finish_migration(self, context, migration, instance, disk_info,
-                         network_info, image_meta, resize_instance):
+                         network_info, image_meta, resize_instance,
+                         block_device_info=None):
         root_vdi = vm_utils.move_disks(self._session, instance, disk_info)
 
         if resize_instance:
@@ -626,16 +626,10 @@ class VMOps(object):
         LOG.debug(_("Migrating VHD '%(vdi_uuid)s' with seq_num %(seq_num)d"),
                   locals(), instance=instance)
         instance_uuid = instance['uuid']
-        params = {'host': dest,
-                  'vdi_uuid': vdi_uuid,
-                  'instance_uuid': instance_uuid,
-                  'sr_path': sr_path,
-                  'seq_num': seq_num}
-
         try:
-            _params = {'params': pickle.dumps(params)}
-            self._session.call_plugin('migration', 'transfer_vhd',
-                                      _params)
+            self._session.call_plugin_serialized('migration', 'transfer_vhd',
+                    instance_uuid=instance_uuid, host=dest, vdi_uuid=vdi_uuid,
+                    sr_path=sr_path, seq_num=seq_num)
         except self._session.XenAPI.Failure:
             msg = _("Failed to transfer vhd to new host")
             raise exception.MigrationError(reason=msg)
@@ -667,9 +661,13 @@ class VMOps(object):
                                        step=1,
                                        total_steps=RESIZE_TOTAL_STEPS)
 
+        vdi_ref, vm_vdi_rec = vm_utils.get_vdi_for_vm_safely(
+                self._session, vm_ref)
+        vdi_uuid = vm_vdi_rec['uuid']
+
         old_gb = instance['root_gb']
         new_gb = instance_type['root_gb']
-        LOG.debug(_("Resizing down VDI %(cow_uuid)s from "
+        LOG.debug(_("Resizing down VDI %(vdi_uuid)s from "
                     "%(old_gb)dGB to %(new_gb)dGB"), locals(),
                   instance=instance)
 
@@ -682,8 +680,6 @@ class VMOps(object):
 
         # 3. Copy VDI, resize partition and filesystem, forget VDI,
         # truncate VHD
-        vdi_ref, vm_vdi_rec = vm_utils.get_vdi_for_vm_safely(
-                self._session, vm_ref)
         new_ref, new_uuid = vm_utils.resize_disk(self._session,
                                                  instance,
                                                  vdi_ref,
@@ -1557,10 +1553,12 @@ class VMOps(object):
 
         """
         if block_migration:
-            migrate_data = self._migrate_receive(ctxt)
-            dest_check_data = {}
-            dest_check_data["block_migration"] = block_migration
-            dest_check_data["migrate_data"] = migrate_data
+            migrate_send_data = self._migrate_receive(ctxt)
+            destination_sr_ref = vm_utils.safe_find_sr(self._session)
+            dest_check_data = {
+                "block_migration": block_migration,
+                "migrate_data": {"migrate_send_data": migrate_send_data,
+                                 "destination_sr_ref": destination_sr_ref}}
             return dest_check_data
         else:
             src = instance_ref['host']
@@ -1581,19 +1579,34 @@ class VMOps(object):
 
         """
         if dest_check_data and 'migrate_data' in dest_check_data:
-            vmref = self._get_vm_opaque_ref(instance_ref)
+            vm_ref = self._get_vm_opaque_ref(instance_ref)
             migrate_data = dest_check_data['migrate_data']
             try:
-                vdi_map = {}
-                vif_map = {}
-                options = {}
-                self._session.call_xenapi("VM.assert_can_migrate", vmref,
-                                          migrate_data, True, vdi_map, vif_map,
-                                          options)
+                self._call_live_migrate_command(
+                    "VM.assert_can_migrate", vm_ref, migrate_data)
             except self._session.XenAPI.Failure as exc:
                 LOG.exception(exc)
                 raise exception.MigrationError(_('VM.assert_can_migrate'
                                                  'failed'))
+
+    def _generate_vdi_map(self, destination_sr_ref, vm_ref):
+        """generate a vdi_map for _call_live_migrate_command """
+        sr_ref = vm_utils.safe_find_sr(self._session)
+        vm_vdis = vm_utils.get_instance_vdis_for_sr(self._session,
+                                                    vm_ref, sr_ref)
+        return dict((vdi, destination_sr_ref) for vdi in vm_vdis)
+
+    def _call_live_migrate_command(self, command_name, vm_ref, migrate_data):
+        """unpack xapi specific parameters, and call a live migrate command"""
+        destination_sr_ref = migrate_data['destination_sr_ref']
+        migrate_send_data = migrate_data['migrate_send_data']
+
+        vdi_map = self._generate_vdi_map(destination_sr_ref, vm_ref)
+        vif_map = {}
+        options = {}
+        self._session.call_xenapi(command_name, vm_ref,
+                                  migrate_send_data, True,
+                                  vdi_map, vif_map, options)
 
     def live_migrate(self, context, instance, destination_hostname,
                      post_method, recover_method, block_migration,
@@ -1605,12 +1618,8 @@ class VMOps(object):
                     raise exception.InvalidParameterValue('Block Migration '
                                     'requires migrate data from destination')
                 try:
-                    vdi_map = {}
-                    vif_map = {}
-                    options = {}
-                    self._session.call_xenapi("VM.migrate_send", vm_ref,
-                                              migrate_data, True,
-                                              vdi_map, vif_map, options)
+                    self._call_live_migrate_command(
+                        "VM.migrate_send", vm_ref, migrate_data)
                 except self._session.XenAPI.Failure as exc:
                     LOG.exception(exc)
                     raise exception.MigrationError(_('Migrate Send failed'))

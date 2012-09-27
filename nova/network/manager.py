@@ -143,7 +143,7 @@ network_opts = [
                 default=False,
                 help='Autoassigning floating ip to VM'),
     cfg.StrOpt('network_host',
-               default=socket.gethostname(),
+               default=socket.getfqdn(),
                help='Network host to use for ip allocation in flat modes'),
     cfg.BoolOpt('fake_call',
                 default=False,
@@ -162,11 +162,6 @@ network_opts = [
 
 FLAGS = flags.FLAGS
 FLAGS.register_opts(network_opts)
-
-
-class AddressAlreadyAllocated(exception.NovaException):
-    """Address was already allocated."""
-    pass
 
 
 class RPCAllocateFixedIP(object):
@@ -325,7 +320,8 @@ class FloatingIP(object):
                                                                 **kwargs)
         if FLAGS.auto_assign_floating_ip:
             # allocate a floating ip
-            floating_address = self.allocate_floating_ip(context, project_id)
+            floating_address = self.allocate_floating_ip(context, project_id,
+                True)
             # set auto_assigned column to true for the floating ip
             self.db.floating_ip_set_auto_assigned(context, floating_address)
 
@@ -338,6 +334,10 @@ class FloatingIP(object):
                                        floating_address,
                                        fixed_address,
                                        affect_auto_assigned=True)
+
+            # create a fresh set of network info that contains the floating ip
+            nw_info = self.get_instance_nw_info(context, **kwargs)
+
         return nw_info
 
     @wrap_check_policy
@@ -404,15 +404,18 @@ class FloatingIP(object):
                 raise exception.NotAuthorized()
 
     @wrap_check_policy
-    def allocate_floating_ip(self, context, project_id, pool=None):
+    def allocate_floating_ip(self, context, project_id, auto_assigned=False,
+                             pool=None):
         """Gets a floating ip from the pool."""
         # NOTE(tr3buchet): all network hosts in zone now use the same pool
         pool = pool or FLAGS.default_floating_pool
+        use_quota = not auto_assigned
 
         # Check the quota; can't put this in the API because we get
         # called into from other places
         try:
-            reservations = QUOTAS.reserve(context, floating_ips=1)
+            if use_quota:
+                reservations = QUOTAS.reserve(context, floating_ips=1)
         except exception.OverQuota:
             pid = context.project_id
             LOG.warn(_("Quota exceeded for %(pid)s, tried to allocate "
@@ -430,10 +433,12 @@ class FloatingIP(object):
                             notifier.INFO, payload)
 
             # Commit the reservations
-            QUOTAS.commit(context, reservations)
+            if use_quota:
+                QUOTAS.commit(context, reservations)
         except Exception:
             with excutils.save_and_reraise_exception():
-                QUOTAS.rollback(context, reservations)
+                if use_quota:
+                    QUOTAS.rollback(context, reservations)
 
         return floating_ip
 
@@ -446,8 +451,9 @@ class FloatingIP(object):
         # handle auto_assigned
         if not affect_auto_assigned and floating_ip.get('auto_assigned'):
             return
+        use_quota = not floating_ip.get('auto_assigned')
 
-        # make sure project ownz this floating ip (allocated)
+        # make sure project owns this floating ip (allocated)
         self._floating_ip_owned_by_project(context, floating_ip)
 
         # make sure floating ip is not associated
@@ -467,7 +473,10 @@ class FloatingIP(object):
 
         # Get reservations...
         try:
-            reservations = QUOTAS.reserve(context, floating_ips=-1)
+            if use_quota:
+                reservations = QUOTAS.reserve(context, floating_ips=-1)
+            else:
+                reservations = None
         except Exception:
             reservations = None
             LOG.exception(_("Failed to update usages deallocating "
@@ -493,7 +502,7 @@ class FloatingIP(object):
         if not affect_auto_assigned and floating_ip.get('auto_assigned'):
             return
 
-        # make sure project ownz this floating ip (allocated)
+        # make sure project owns this floating ip (allocated)
         self._floating_ip_owned_by_project(context, floating_ip)
 
         # disassociate any already associated
@@ -573,7 +582,7 @@ class FloatingIP(object):
         if not affect_auto_assigned and floating_ip.get('auto_assigned'):
             return
 
-        # make sure project ownz this floating ip (allocated)
+        # make sure project owns this floating ip (allocated)
         self._floating_ip_owned_by_project(context, floating_ip)
 
         # make sure floating ip is associated
@@ -940,7 +949,7 @@ class NetworkManager(manager.SchedulerDependentManager):
         #                 a non-vlan instance should connect to
         if requested_networks is not None and len(requested_networks) != 0:
             network_uuids = [uuid for (uuid, fixed_ip) in requested_networks]
-            networks = self.db.network_get_all_by_uuids(context, network_uuids)
+            networks = self._get_networks_by_uuids(context, network_uuids)
         else:
             try:
                 networks = self.db.network_get_all(context)
@@ -1354,6 +1363,19 @@ class NetworkManager(manager.SchedulerDependentManager):
         if not fixed_ip['allocated']:
             self.db.fixed_ip_disassociate(context, address)
 
+    @staticmethod
+    def _convert_int_args(kwargs):
+        int_args = ("network_size", "num_networks",
+                    "vlan_start", "vpn_start")
+        for key in int_args:
+            try:
+                value = kwargs.get(key)
+                if value is None:
+                    continue
+                kwargs[key] = int(value)
+            except ValueError:
+                raise ValueError(_("%s must be an integer") % key)
+
     def create_networks(self, context,
                         label, cidr=None, multi_host=None, num_networks=None,
                         network_size=None, cidr_v6=None,
@@ -1367,15 +1389,7 @@ class NetworkManager(manager.SchedulerDependentManager):
                      "fixed_cidr")
         for name in arg_names:
             kwargs[name] = locals()[name]
-        int_args = ("network_size", "num_networks",
-                    "vlan_start", "vpn_start")
-        for key in int_args:
-            try:
-                kwargs[key] = int(kwargs[key])
-            except ValueError:
-                raise ValueError(_("%s must be an integer") % key)
-            except KeyError:
-                pass
+        self._convert_int_args(kwargs)
 
         # check for certain required inputs
         label = kwargs["label"]
@@ -1703,10 +1717,12 @@ class NetworkManager(manager.SchedulerDependentManager):
                         instance_uuid=fixed_ip_ref['instance_uuid'])
 
     def _get_network_by_id(self, context, network_id):
-        return self.db.network_get(context, network_id)
+        return self.db.network_get(context, network_id,
+                                   project_only="allow_none")
 
     def _get_networks_by_uuids(self, context, network_uuids):
-        return self.db.network_get_all_by_uuids(context, network_uuids)
+        return self.db.network_get_all_by_uuids(context, network_uuids,
+                                                project_only="allow_none")
 
     @wrap_check_policy
     def get_vifs_by_instance(self, context, instance_id):
@@ -1905,10 +1921,6 @@ class FlatDHCPManager(RPCAllocateFixedIP, FloatingIP, NetworkManager):
             dev = self.driver.get_dev(network)
             self.driver.update_dhcp(context, dev, network)
 
-    def _get_network_by_id(self, context, network_id):
-        return NetworkManager._get_network_by_id(self, context.elevated(),
-                                                 network_id)
-
     def _get_network_dict(self, network):
         """Returns the dict representing necessary and meta network fields"""
 
@@ -1996,21 +2008,34 @@ class VlanManager(RPCAllocateFixedIP, FloatingIP, NetworkManager):
             network_id = None
         self.db.network_associate(context, project_id, network_id, force=True)
 
+    def _get_network_by_id(self, context, network_id):
+        # NOTE(vish): Don't allow access to networks with project_id=None as
+        #             these are networksa that haven't been allocated to a
+        #             project yet.
+        return self.db.network_get(context, network_id, project_only=True)
+
+    def _get_networks_by_uuids(self, context, network_uuids):
+        # NOTE(vish): Don't allow access to networks with project_id=None as
+        #             these are networksa that haven't been allocated to a
+        #             project yet.
+        return self.db.network_get_all_by_uuids(context, network_uuids,
+                                                project_only=True)
+
     def _get_networks_for_instance(self, context, instance_id, project_id,
                                    requested_networks=None):
         """Determine which networks an instance should connect to."""
         # get networks associated with project
         if requested_networks is not None and len(requested_networks) != 0:
             network_uuids = [uuid for (uuid, fixed_ip) in requested_networks]
-            networks = self.db.network_get_all_by_uuids(context,
-                                                    network_uuids,
-                                                    project_id)
+            networks = self._get_networks_by_uuids(context, network_uuids)
         else:
             networks = self.db.project_get_networks(context, project_id)
         return networks
 
     def create_networks(self, context, **kwargs):
         """Create networks based on parameters."""
+        self._convert_int_args(kwargs)
+
         # Check that num_networks + vlan_start is not > 4094, fixes lp708025
         if kwargs['num_networks'] + kwargs['vlan_start'] > 4094:
             raise ValueError(_('The sum between the number of networks and'
@@ -2063,10 +2088,6 @@ class VlanManager(RPCAllocateFixedIP, FloatingIP, NetworkManager):
             network['dhcp_server'] = self._get_dhcp_ip(context, network)
             dev = self.driver.get_dev(network)
             self.driver.update_dhcp(context, dev, network)
-
-    def _get_networks_by_uuids(self, context, network_uuids):
-        return self.db.network_get_all_by_uuids(context, network_uuids,
-                                                     context.project_id)
 
     def _get_network_dict(self, network):
         """Returns the dict representing necessary and meta network fields"""

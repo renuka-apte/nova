@@ -375,9 +375,17 @@ class CacheConcurrencyTestCase(test.TestCase):
         super(CacheConcurrencyTestCase, self).setUp()
         self.flags(instances_path='nova.compute.manager')
 
+        # utils.synchronized() will create the lock_path for us if it
+        # doesn't already exist. It will also delete it when it's done,
+        # which can cause race conditions with the multiple threads we
+        # use for tests. So, create the path here so utils.synchronized()
+        # won't delete it out from under one of the threads.
+        self.lock_path = os.path.join(FLAGS.instances_path, 'locks')
+        utils.ensure_tree(self.lock_path)
+
         def fake_exists(fname):
             basedir = os.path.join(FLAGS.instances_path, FLAGS.base_dir_name)
-            if fname == basedir:
+            if fname == basedir or fname == self.lock_path:
                 return True
             return False
 
@@ -394,6 +402,11 @@ class CacheConcurrencyTestCase(test.TestCase):
 
     def tearDown(self):
         imagebackend.libvirt_utils = libvirt_utils
+
+        # Make sure the lock_path for this test is cleaned up
+        if os.path.exists(self.lock_path):
+            shutil.rmtree(self.lock_path)
+
         super(CacheConcurrencyTestCase, self).tearDown()
 
     def test_same_fname_concurrency(self):
@@ -401,11 +414,11 @@ class CacheConcurrencyTestCase(test.TestCase):
         backend = imagebackend.Backend(False)
         wait1 = eventlet.event.Event()
         done1 = eventlet.event.Event()
-        eventlet.spawn(backend.image('instance', 'name').cache,
+        thr1 = eventlet.spawn(backend.image('instance', 'name').cache,
                 _concurrency, 'fname', None, wait=wait1, done=done1)
         wait2 = eventlet.event.Event()
         done2 = eventlet.event.Event()
-        eventlet.spawn(backend.image('instance', 'name').cache,
+        thr2 = eventlet.spawn(backend.image('instance', 'name').cache,
                 _concurrency, 'fname', None, wait=wait2, done=done2)
         wait2.send()
         eventlet.sleep(0)
@@ -416,17 +429,21 @@ class CacheConcurrencyTestCase(test.TestCase):
         done1.wait()
         eventlet.sleep(0)
         self.assertTrue(done2.ready())
+        # Wait on greenthreads to assert they didn't raise exceptions
+        # during execution
+        thr1.wait()
+        thr2.wait()
 
     def test_different_fname_concurrency(self):
         """Ensures that two different fname caches are concurrent"""
         backend = imagebackend.Backend(False)
         wait1 = eventlet.event.Event()
         done1 = eventlet.event.Event()
-        eventlet.spawn(backend.image('instance', 'name').cache,
+        thr1 = eventlet.spawn(backend.image('instance', 'name').cache,
                 _concurrency, 'fname2', None, wait=wait1, done=done1)
         wait2 = eventlet.event.Event()
         done2 = eventlet.event.Event()
-        eventlet.spawn(backend.image('instance', 'name').cache,
+        thr2 = eventlet.spawn(backend.image('instance', 'name').cache,
                 _concurrency, 'fname1', None, wait=wait2, done=done2)
         wait2.send()
         eventlet.sleep(0)
@@ -435,6 +452,10 @@ class CacheConcurrencyTestCase(test.TestCase):
         finally:
             wait1.send()
             eventlet.sleep(0)
+        # Wait on greenthreads to assert they didn't raise exceptions
+        # during execution
+        thr1.wait()
+        thr2.wait()
 
 
 class FakeVolumeDriver(object):
@@ -1626,14 +1647,11 @@ class LibvirtConnTestCase(test.TestCase):
         conn = libvirt_driver.LibvirtDriver(False)
 
         self.mox.StubOutWithMock(conn, '_get_compute_info')
-        self.mox.StubOutWithMock(conn, 'get_instance_disk_info')
         self.mox.StubOutWithMock(conn, '_create_shared_storage_test_file')
         self.mox.StubOutWithMock(conn, '_compare_cpu')
 
         conn._get_compute_info(self.context, FLAGS.host).AndReturn(
                                               {'disk_available_least': 400})
-        conn.get_instance_disk_info(instance_ref["name"]).AndReturn(
-                                            '[{"virt_disk_size":2}]')
         # _check_cpu_match
         conn._get_compute_info(self.context,
                                src).AndReturn({'cpu_info': "asdf"})
@@ -1645,9 +1663,12 @@ class LibvirtConnTestCase(test.TestCase):
 
         self.mox.ReplayAll()
         return_value = conn.check_can_live_migrate_destination(self.context,
-                                instance_ref, True, False)
+                                instance_ref, True)
         self.assertDictMatch(return_value,
-                             {"filename": "file", "block_migration": True})
+                             {"filename": "file",
+                              'disk_available_mb': 409600,
+                              "disk_over_commit": False,
+                              "block_migration": True})
 
     def test_check_can_live_migrate_dest_all_pass_no_block_migration(self):
         instance_ref = db.instance_create(self.context, self.test_instance)
@@ -1670,28 +1691,12 @@ class LibvirtConnTestCase(test.TestCase):
 
         self.mox.ReplayAll()
         return_value = conn.check_can_live_migrate_destination(self.context,
-                                instance_ref, False, False)
+                                instance_ref, False)
         self.assertDictMatch(return_value,
-                            {"filename": "file", "block_migration": False})
-
-    def test_check_can_live_migrate_dest_fails_not_enough_disk(self):
-        instance_ref = db.instance_create(self.context, self.test_instance)
-        dest = "fake_host_2"
-        src = instance_ref['host']
-        conn = libvirt_driver.LibvirtDriver(False)
-
-        self.mox.StubOutWithMock(conn, '_get_compute_info')
-        self.mox.StubOutWithMock(conn, 'get_instance_disk_info')
-
-        conn._get_compute_info(self.context, FLAGS.host).AndReturn(
-                                              {'disk_available_least': 0})
-        conn.get_instance_disk_info(instance_ref["name"]).AndReturn(
-                                            '[{"virt_disk_size":2}]')
-
-        self.mox.ReplayAll()
-        self.assertRaises(exception.MigrationError,
-                          conn.check_can_live_migrate_destination,
-                          self.context, instance_ref, True, False)
+                            {"filename": "file",
+                             "block_migration": False,
+                             "disk_over_commit": False,
+                             "disk_available_mb": None})
 
     def test_check_can_live_migrate_dest_incompatible_cpu_raises(self):
         instance_ref = db.instance_create(self.context, self.test_instance)
@@ -1709,29 +1714,14 @@ class LibvirtConnTestCase(test.TestCase):
         self.mox.ReplayAll()
         self.assertRaises(exception.InvalidCPUInfo,
                           conn.check_can_live_migrate_destination,
-                          self.context, instance_ref, False, False)
-
-    def test_check_can_live_migrate_dest_fail_space_with_block_migration(self):
-        instance_ref = db.instance_create(self.context, self.test_instance)
-        dest = "fake_host_2"
-        src = instance_ref['host']
-        conn = libvirt_driver.LibvirtDriver(False)
-
-        self.mox.StubOutWithMock(conn, '_get_compute_info')
-        self.mox.StubOutWithMock(conn, 'get_instance_disk_info')
-
-        conn._get_compute_info(self.context, FLAGS.host).AndReturn(
-                                              {'disk_available_least': 0})
-        conn.get_instance_disk_info(instance_ref["name"]).AndReturn(
-                                            '[{"virt_disk_size":2}]')
-
-        self.mox.ReplayAll()
-        self.assertRaises(exception.MigrationError,
-                          conn.check_can_live_migrate_destination,
-                          self.context, instance_ref, True, False)
+                          self.context, instance_ref, False)
 
     def test_check_can_live_migrate_dest_cleanup_works_correctly(self):
-        dest_check_data = {"filename": "file", "block_migration": True}
+        instance_ref = db.instance_create(self.context, self.test_instance)
+        dest_check_data = {"filename": "file",
+                           "block_migration": True,
+                           "disk_over_commit": False,
+                           "disk_available_mb": 1024}
         conn = libvirt_driver.LibvirtDriver(False)
 
         self.mox.StubOutWithMock(conn, '_cleanup_shared_storage_test_file')
@@ -1743,11 +1733,19 @@ class LibvirtConnTestCase(test.TestCase):
 
     def test_check_can_live_migrate_source_works_correctly(self):
         instance_ref = db.instance_create(self.context, self.test_instance)
-        dest_check_data = {"filename": "file", "block_migration": True}
+        dest_check_data = {"filename": "file",
+                           "block_migration": True,
+                           "disk_over_commit": False,
+                           "disk_available_mb": 1024}
         conn = libvirt_driver.LibvirtDriver(False)
 
         self.mox.StubOutWithMock(conn, "_check_shared_storage_test_file")
         conn._check_shared_storage_test_file("file").AndReturn(False)
+
+        self.mox.StubOutWithMock(conn, "_assert_dest_node_has_enough_disk")
+        conn._assert_dest_node_has_enough_disk(self.context, instance_ref,
+                                        dest_check_data['disk_available_mb'],
+                                               False)
 
         self.mox.ReplayAll()
         conn.check_can_live_migrate_source(self.context, instance_ref,
@@ -1755,7 +1753,10 @@ class LibvirtConnTestCase(test.TestCase):
 
     def test_check_can_live_migrate_dest_fail_shared_storage_with_blockm(self):
         instance_ref = db.instance_create(self.context, self.test_instance)
-        dest_check_data = {"filename": "file", "block_migration": True}
+        dest_check_data = {"filename": "file",
+                           "block_migration": True,
+                           "disk_over_commit": False,
+                           'disk_available_mb': 1024}
         conn = libvirt_driver.LibvirtDriver(False)
 
         self.mox.StubOutWithMock(conn, "_check_shared_storage_test_file")
@@ -1768,7 +1769,10 @@ class LibvirtConnTestCase(test.TestCase):
 
     def test_check_can_live_migrate_no_shared_storage_no_blck_mig_raises(self):
         instance_ref = db.instance_create(self.context, self.test_instance)
-        dest_check_data = {"filename": "file", "block_migration": False}
+        dest_check_data = {"filename": "file",
+                           "block_migration": False,
+                           "disk_over_commit": False,
+                           'disk_available_mb': 1024}
         conn = libvirt_driver.LibvirtDriver(False)
 
         self.mox.StubOutWithMock(conn, "_check_shared_storage_test_file")
@@ -1776,6 +1780,28 @@ class LibvirtConnTestCase(test.TestCase):
 
         self.mox.ReplayAll()
         self.assertRaises(exception.InvalidSharedStorage,
+                          conn.check_can_live_migrate_source,
+                          self.context, instance_ref, dest_check_data)
+
+    def test_check_can_live_migrate_source_with_dest_not_enough_disk(self):
+        instance_ref = db.instance_create(self.context, self.test_instance)
+        dest = "fake_host_2"
+        src = instance_ref['host']
+        conn = libvirt_driver.LibvirtDriver(False)
+
+        self.mox.StubOutWithMock(conn, "_check_shared_storage_test_file")
+        conn._check_shared_storage_test_file("file").AndReturn(False)
+
+        self.mox.StubOutWithMock(conn, "get_instance_disk_info")
+        conn.get_instance_disk_info(instance_ref["name"]).AndReturn(
+                                            '[{"virt_disk_size":2}]')
+
+        dest_check_data = {"filename": "file",
+                           "disk_available_mb": 0,
+                           "block_migration": True,
+                           "disk_over_commit": False}
+        self.mox.ReplayAll()
+        self.assertRaises(exception.MigrationError,
                           conn.check_can_live_migrate_source,
                           self.context, instance_ref, dest_check_data)
 
@@ -2160,8 +2186,7 @@ class LibvirtConnTestCase(test.TestCase):
         instance = db.instance_create(self.context, self.test_instance)
         conn.destroy(instance, {})
 
-    def test_destroy(self):
-        """Ensure destroy calls virDomain.undefineFlags"""
+    def test_destroy_undefines(self):
         mock = self.mox.CreateMock(libvirt.virDomain)
         mock.destroy()
         mock.undefineFlags(1).AndReturn(1)
@@ -2181,9 +2206,7 @@ class LibvirtConnTestCase(test.TestCase):
                     "uuid": "875a8070-d0b9-4949-8b31-104d125c9a64"}
         conn.destroy(instance, [])
 
-    def test_destroy_noflag(self):
-        """Ensure destroy calls virDomain.undefine
-        if mock.undefineFlags raises an error"""
+    def test_destroy_undefines_no_undefine_flags(self):
         mock = self.mox.CreateMock(libvirt.virDomain)
         mock.destroy()
         mock.undefineFlags(1).AndRaise(libvirt.libvirtError('Err'))
@@ -2204,10 +2227,14 @@ class LibvirtConnTestCase(test.TestCase):
                     "uuid": "875a8070-d0b9-4949-8b31-104d125c9a64"}
         conn.destroy(instance, [])
 
-    def test_private_destroy(self):
-        """Ensure Instance not found skips undefine"""
+    def test_destroy_undefines_no_attribute_with_managed_save(self):
         mock = self.mox.CreateMock(libvirt.virDomain)
         mock.destroy()
+        mock.undefineFlags(1).AndRaise(AttributeError())
+        mock.hasManagedSaveImage(0).AndReturn(True)
+        mock.managedSaveRemove(0)
+        mock.undefine()
+
         self.mox.ReplayAll()
 
         def fake_lookup_by_name(instance_name):
@@ -2221,11 +2248,31 @@ class LibvirtConnTestCase(test.TestCase):
         self.stubs.Set(conn, 'get_info', fake_get_info)
         instance = {"name": "instancename", "id": "instanceid",
                     "uuid": "875a8070-d0b9-4949-8b31-104d125c9a64"}
-        result = conn._destroy(instance)
-        self.assertTrue(result)
+        conn.destroy(instance, [])
+
+    def test_destroy_undefines_no_attribute_no_managed_save(self):
+        mock = self.mox.CreateMock(libvirt.virDomain)
+        mock.destroy()
+        mock.undefineFlags(1).AndRaise(AttributeError())
+        mock.hasManagedSaveImage(0).AndRaise(AttributeError())
+        mock.undefine()
+
+        self.mox.ReplayAll()
+
+        def fake_lookup_by_name(instance_name):
+            return mock
+
+        def fake_get_info(instance_name):
+            return {'state': power_state.SHUTDOWN}
+
+        conn = libvirt_driver.LibvirtDriver(False)
+        self.stubs.Set(conn, '_lookup_by_name', fake_lookup_by_name)
+        self.stubs.Set(conn, 'get_info', fake_get_info)
+        instance = {"name": "instancename", "id": "instanceid",
+                    "uuid": "875a8070-d0b9-4949-8b31-104d125c9a64"}
+        conn.destroy(instance, [])
 
     def test_private_destroy_not_found(self):
-        """Ensure Instance not found skips undefine"""
         mock = self.mox.CreateMock(libvirt.virDomain)
         mock.destroy()
         self.mox.ReplayAll()
@@ -2241,8 +2288,8 @@ class LibvirtConnTestCase(test.TestCase):
         self.stubs.Set(conn, 'get_info', fake_get_info)
         instance = {"name": "instancename", "id": "instanceid",
                     "uuid": "875a8070-d0b9-4949-8b31-104d125c9a64"}
-        result = conn._destroy(instance)
-        self.assertFalse(result)
+        # NOTE(vish): verifies destory doesn't raise if the instance disappears
+        conn._destroy(instance)
 
     def test_available_least_handles_missing(self):
         """Ensure destroy calls managedSaveRemove for saved instance"""
@@ -3355,6 +3402,9 @@ class LibvirtUtilsTestCase(test.TestCase):
 
     def test_create_cow_image(self):
         self.mox.StubOutWithMock(utils, 'execute')
+        rval = ('', '')
+        utils.execute('env', 'LC_ALL=C', 'LANG=C',
+                      'qemu-img', 'info', '/some/path').AndReturn(rval)
         utils.execute('qemu-img', 'create', '-f', 'qcow2',
                       '-o', 'backing_file=/some/path',
                       '/the/new/cow')
@@ -3667,9 +3717,6 @@ class LibvirtDriverTestCase(test.TestCase):
         self.assertEquals(out, disk_info_text)
 
     def test_wait_for_running(self):
-        """Test for nova.virt.libvirt.libvirt_driver.LivirtConnection
-        ._wait_for_running. """
-
         def fake_get_info(instance):
             if instance['name'] == "not_found":
                 raise exception.NotFound
@@ -3682,7 +3729,7 @@ class LibvirtDriverTestCase(test.TestCase):
                        fake_get_info)
 
         """ instance not found case """
-        self.assertRaises(utils.LoopingCallDone,
+        self.assertRaises(exception.NotFound,
                 self.libvirtconnection._wait_for_running,
                     {'name': 'not_found',
                      'uuid': 'not_found_uuid'})
@@ -3713,7 +3760,8 @@ class LibvirtDriverTestCase(test.TestCase):
         def fake_extend(path, size):
             pass
 
-        def fake_to_xml(instance, network_info):
+        def fake_to_xml(instance, network_info, image_meta=None, rescue=None,
+                        block_device_info=None):
             return ""
 
         def fake_plug_vifs(instance, network_info):
@@ -3779,6 +3827,11 @@ class LibvirtDriverTestCase(test.TestCase):
         def fake_get_info(instance):
             return {'state': power_state.RUNNING}
 
+        def fake_to_xml(instance, network_info, image_meta=None, rescue=None,
+                        block_device_info=None):
+            return ""
+
+        self.stubs.Set(self.libvirtconnection, 'to_xml', fake_to_xml)
         self.stubs.Set(self.libvirtconnection, 'plug_vifs', fake_plug_vifs)
         self.stubs.Set(utils, 'execute', fake_execute)
         fw = base_firewall.NoopFirewallDriver()
@@ -3801,6 +3854,55 @@ class LibvirtDriverTestCase(test.TestCase):
             f.close()
 
             self.libvirtconnection.finish_revert_migration(ins_ref, None)
+
+    def test_confirm_migration(self):
+        ins_ref = self._create_instance()
+
+        self.mox.StubOutWithMock(self.libvirtconnection, "_cleanup_resize")
+        self.libvirtconnection._cleanup_resize(ins_ref,
+                             _fake_network_info(self.stubs, 1))
+
+        self.mox.ReplayAll()
+        self.libvirtconnection.confirm_migration("migration_ref", ins_ref,
+                                            _fake_network_info(self.stubs, 1))
+
+    def test_cleanup_resize_same_host(self):
+        ins_ref = self._create_instance({'host': FLAGS.host})
+
+        def fake_os_path_exists(path):
+            return True
+
+        def fake_shutil_rmtree(target):
+            pass
+
+        self.stubs.Set(os.path, 'exists', fake_os_path_exists)
+        self.stubs.Set(shutil, 'rmtree', fake_shutil_rmtree)
+
+        self.mox.ReplayAll()
+        self.libvirtconnection._cleanup_resize(ins_ref,
+                                            _fake_network_info(self.stubs, 1))
+
+    def test_cleanup_resize_not_same_host(self):
+        host = 'not' + FLAGS.host
+        ins_ref = self._create_instance({'host': host})
+
+        def fake_os_path_exists(path):
+            return True
+
+        def fake_shutil_rmtree(target):
+            pass
+
+        def fake_unfilter_instance(instance, network_info):
+            pass
+
+        self.stubs.Set(os.path, 'exists', fake_os_path_exists)
+        self.stubs.Set(shutil, 'rmtree', fake_shutil_rmtree)
+        self.stubs.Set(self.libvirtconnection.firewall_driver,
+                       'unfilter_instance', fake_unfilter_instance)
+
+        self.mox.ReplayAll()
+        self.libvirtconnection._cleanup_resize(ins_ref,
+                                            _fake_network_info(self.stubs, 1))
 
 
 class LibvirtNonblockingTestCase(test.TestCase):

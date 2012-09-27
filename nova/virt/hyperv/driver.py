@@ -120,8 +120,8 @@ class HyperVDriver(driver.ComputeDriver):
     def poll_rescued_instances(self, timeout):
         pass
 
-    def update_available_resource(self, context, host):
-        self._vmops.update_available_resource(context, host)
+    def get_available_resource(self):
+        return self._vmops.get_available_resource()
 
     def update_host_status(self):
         """See xenapi_conn.py implementation."""
@@ -207,12 +207,14 @@ class HyperVDriver(driver.ComputeDriver):
         """Confirms a resize, destroying the source VM"""
         LOG.debug(_("confirm_migration called"), instance=instance)
 
-    def finish_revert_migration(self, instance, network_info):
+    def finish_revert_migration(self, instance, network_info,
+                                block_device_info=None):
         """Finish reverting a resize, powering back on the instance"""
         LOG.debug(_("finish_revert_migration called"), instance=instance)
 
     def finish_migration(self, context, migration, instance, disk_info,
-        network_info, image_meta, resize_instance=False):
+        network_info, image_meta, resize_instance=False,
+        block_device_info=None):
         """Completes a resize, turning on the migrated instance"""
         LOG.debug(_("finish_migration called"), instance=instance)
 

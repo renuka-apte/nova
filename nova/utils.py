@@ -31,6 +31,7 @@ import random
 import re
 import shlex
 import shutil
+import signal
 import socket
 import struct
 import sys
@@ -112,6 +113,12 @@ def vpn_ping(address, port, timeout=0.05, session_id=None):
         return server_sess
 
 
+def _subprocess_setup():
+    # Python installs a SIGPIPE handler by default. This is usually not what
+    # non-Python subprocesses expect.
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+
+
 def execute(*cmd, **kwargs):
     """Helper method to execute command with optional retry.
 
@@ -180,6 +187,7 @@ def execute(*cmd, **kwargs):
                                    stdout=_PIPE,
                                    stderr=_PIPE,
                                    close_fds=True,
+                                   preexec_fn=_subprocess_setup,
                                    shell=shell)
             result = None
             if process_input is not None:
@@ -717,16 +725,17 @@ def synchronized(name, external=False, lock_path=None):
                               {'lock': name, 'method': f.__name__})
                     cleanup_dir = False
 
-                    def wrap_mkdtemp():
-                        cleanup_dir = True
-                        return tempfile.mkdtemp()
-
                     # We need a copy of lock_path because it is non-local
                     local_lock_path = lock_path
                     if not local_lock_path:
-                        local_lock_path = FLAGS.lock_path or wrap_mkdtemp()
+                        local_lock_path = FLAGS.lock_path
+
+                    if not local_lock_path:
+                        cleanup_dir = True
+                        local_lock_path = tempfile.mkdtemp()
 
                     if not os.path.exists(local_lock_path):
+                        cleanup_dir = True
                         ensure_tree(local_lock_path)
 
                     # NOTE(mikal): the lock name cannot contain directory
@@ -734,8 +743,8 @@ def synchronized(name, external=False, lock_path=None):
                     safe_name = name.replace(os.sep, '_')
                     lock_file_path = os.path.join(local_lock_path,
                                                   'nova-%s' % safe_name)
-                    lock = InterProcessLock(lock_file_path)
                     try:
+                        lock = InterProcessLock(lock_file_path)
                         with lock:
                             LOG.debug(_('Got file lock "%(lock)s" for '
                                         'method "%(method)s"...'),
@@ -940,6 +949,15 @@ def bool_from_str(val):
                val.lower() == 'y'
 
 
+def is_valid_boolstr(val):
+    """Check if the provided string is a valid bool string or not. """
+    val = str(val).lower()
+    return val == 'true' or val == 'false' or \
+           val == 'yes' or val == 'no' or \
+           val == 'y' or val == 'n' or \
+           val == '1' or val == '0'
+
+
 def is_valid_ipv4(address):
     """valid the address strictly as per format xxx.xxx.xxx.xxx.
     where xxx is a value between 0 and 255.
@@ -1123,6 +1141,18 @@ def read_cached_file(filename, cache_info, reload_func=None):
         if reload_func:
             reload_func(cache_info['data'])
     return cache_info['data']
+
+
+def file_open(*args, **kwargs):
+    """Open file
+
+    see built-in file() documentation for more details
+
+    Note: The reason this is kept in a separate module is to easily
+          be able to provide a stub module that doesn't alter system
+          state at all (for unit tests)
+    """
+    return file(*args, **kwargs)
 
 
 def hash_file(file_like_object):

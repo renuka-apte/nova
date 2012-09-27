@@ -265,6 +265,14 @@ class XMLDeserializer(TextDeserializer):
                 return child.nodeValue
         return ""
 
+    def extract_elements(self, node):
+        """Get only Element type childs from node"""
+        elements = []
+        for child in node.childNodes:
+            if child.nodeType == child.ELEMENT_NODE:
+                elements.append(child)
+        return elements
+
     def find_attribute_or_element(self, parent, name):
         """Get an attribute value; fallback to an element if not found"""
         if parent.hasAttribute(name):
@@ -1070,6 +1078,9 @@ class ControllerMetaclass(type):
         # Find all actions
         actions = {}
         extensions = []
+        # start with wsgi actions from base classes
+        for base in bases:
+            actions.update(getattr(base, 'wsgi_actions', {}))
         for key, value in cls_dict.items():
             if not callable(value):
                 continue
@@ -1101,6 +1112,23 @@ class Controller(object):
             self._view_builder = self._view_builder_class()
         else:
             self._view_builder = None
+
+    @staticmethod
+    def is_valid_body(body, entity_name):
+        if not (body and entity_name in body):
+            return False
+
+        def is_dict(d):
+            try:
+                d.get(None)
+                return True
+            except AttributeError:
+                return False
+
+        if not is_dict(body[entity_name]):
+            return False
+
+        return True
 
 
 class Fault(webob.exc.HTTPException):
@@ -1170,10 +1198,11 @@ class OverLimitFault(webob.exc.HTTPException):
         hdrs = OverLimitFault._retry_after(retry_time)
         self.wrapped_exc = webob.exc.HTTPRequestEntityTooLarge(headers=hdrs)
         self.content = {
-            "overLimitFault": {
+            "overLimit": {
                 "code": self.wrapped_exc.status_int,
                 "message": message,
                 "details": details,
+                "retryAfter": hdrs['Retry-After'],
             },
         }
 
@@ -1191,7 +1220,7 @@ class OverLimitFault(webob.exc.HTTPException):
         error format.
         """
         content_type = request.best_match_content_type()
-        metadata = {"attributes": {"overLimitFault": "code"}}
+        metadata = {"attributes": {"overLimit": ["code", "retryAfter"]}}
 
         xml_serializer = XMLDictSerializer(metadata, XMLNS_V11)
         serializer = {
@@ -1201,6 +1230,7 @@ class OverLimitFault(webob.exc.HTTPException):
 
         content = serializer.serialize(self.content)
         self.wrapped_exc.body = content
+        self.wrapped_exc.content_type = content_type
 
         return self.wrapped_exc
 

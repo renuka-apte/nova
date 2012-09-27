@@ -44,11 +44,11 @@ from nova.tests.xenapi import stubs
 from nova.virt.xenapi import agent
 from nova.virt.xenapi import driver as xenapi_conn
 from nova.virt.xenapi import fake as xenapi_fake
+from nova.virt.xenapi import pool
 from nova.virt.xenapi import pool_states
 from nova.virt.xenapi import vm_utils
 from nova.virt.xenapi import vmops
 from nova.virt.xenapi import volume_utils
-
 
 LOG = logging.getLogger(__name__)
 
@@ -1872,15 +1872,44 @@ class XenAPIAggregateTestCase(stubs.XenAPITestBase):
                               'host': xenapi_fake.get_record('host',
                                                              host_ref)['uuid']}
 
-    def test_add_to_aggregate_called(self):
-        def fake_add_to_aggregate(context, aggregate, host):
-            fake_add_to_aggregate.called = True
+    def test_pool_add_to_aggregate_called_by_driver(self):
+
+        calls = []
+
+        def pool_add_to_aggregate(context, aggregate, host, slave_info=None):
+            self.assertEquals("CONTEXT", context)
+            self.assertEquals("AGGREGATE", aggregate)
+            self.assertEquals("HOST", host)
+            self.assertEquals("SLAVEINFO", slave_info)
+            calls.append(pool_add_to_aggregate)
         self.stubs.Set(self.conn._pool,
                        "add_to_aggregate",
-                       fake_add_to_aggregate)
+                       pool_add_to_aggregate)
 
-        self.conn.add_to_aggregate(None, None, None)
-        self.assertTrue(fake_add_to_aggregate.called)
+        self.conn.add_to_aggregate("CONTEXT", "AGGREGATE", "HOST",
+                                   slave_info="SLAVEINFO")
+
+        self.assertTrue(pool_add_to_aggregate in calls)
+
+    def test_pool_remove_from_aggregate_called_by_driver(self):
+
+        calls = []
+
+        def pool_remove_from_aggregate(context, aggregate, host,
+                                       slave_info=None):
+            self.assertEquals("CONTEXT", context)
+            self.assertEquals("AGGREGATE", aggregate)
+            self.assertEquals("HOST", host)
+            self.assertEquals("SLAVEINFO", slave_info)
+            calls.append(pool_remove_from_aggregate)
+        self.stubs.Set(self.conn._pool,
+                       "remove_from_aggregate",
+                       pool_remove_from_aggregate)
+
+        self.conn.remove_from_aggregate("CONTEXT", "AGGREGATE", "HOST",
+                                        slave_info="SLAVEINFO")
+
+        self.assertTrue(pool_remove_from_aggregate in calls)
 
     def test_add_to_aggregate_for_first_host_sets_metadata(self):
         def fake_init_pool(id, name):
@@ -1902,11 +1931,11 @@ class XenAPIAggregateTestCase(stubs.XenAPITestBase):
         aggregate = self._aggregate_setup(hosts=['host', 'host2'],
                                           metadata=self.fake_metadata)
         self.conn._pool.add_to_aggregate(self.context, aggregate, "host2",
-                                         compute_uuid='fake_uuid',
+                                         dict(compute_uuid='fake_uuid',
                                          url='fake_url',
                                          user='fake_user',
                                          passwd='fake_pass',
-                                         xenhost_uuid='fake_uuid')
+                                         xenhost_uuid='fake_uuid'))
         self.assertTrue(fake_join_slave.called)
 
     def test_add_to_aggregate_first_host(self):
@@ -2062,7 +2091,7 @@ class XenAPIAggregateTestCase(stubs.XenAPITestBase):
 
     def test_add_aggregate_host_raise_err(self):
         """Ensure the undo operation works correctly on add."""
-        def fake_driver_add_to_aggregate(context, aggregate, host):
+        def fake_driver_add_to_aggregate(context, aggregate, host, **_ignore):
             raise exception.AggregateError
         self.stubs.Set(self.compute.driver, "add_to_aggregate",
                        fake_driver_add_to_aggregate)
@@ -2078,6 +2107,98 @@ class XenAPIAggregateTestCase(stubs.XenAPITestBase):
         self.assertEqual(excepted.metadetails[pool_states.KEY],
                 pool_states.ERROR)
         self.assertEqual(excepted.hosts, [])
+
+
+class Aggregate(object):
+    def __init__(self, id=None, hosts=None):
+        self.id = id
+        self.hosts = hosts or []
+
+
+class MockComputeAPI(object):
+    def __init__(self):
+        self._mock_calls = []
+
+    def add_aggregate_host(self, ctxt, aggregate_id,
+                                     host_param, host, slave_info):
+        self._mock_calls.append((
+            self.add_aggregate_host, ctxt, aggregate_id,
+            host_param, host, slave_info))
+
+    def remove_aggregate_host(self, ctxt, aggregate_id, host_param,
+                              host, slave_info):
+        self._mock_calls.append((
+            self.remove_aggregate_host, ctxt, aggregate_id,
+            host_param, host, slave_info))
+
+
+class StubDependencies(object):
+    """Stub dependencies for ResourcePool"""
+
+    def __init__(self):
+        self.compute_rpcapi = MockComputeAPI()
+
+    def _is_hv_pool(self, *_ignore):
+        return True
+
+    def _get_metadata(self, *_ignore):
+        return {
+            pool_states.KEY: {},
+            'master_compute': 'master'
+        }
+
+    def _create_slave_info(self, *ignore):
+        return "SLAVE_INFO"
+
+
+class ResourcePoolWithStubs(StubDependencies, pool.ResourcePool):
+    """ A ResourcePool, use stub dependencies """
+
+
+class HypervisorPoolTestCase(test.TestCase):
+
+    def test_slave_asks_master_to_add_slave_to_pool(self):
+        slave = ResourcePoolWithStubs()
+        aggregate = Aggregate(id=98, hosts=[])
+
+        slave.add_to_aggregate("CONTEXT", aggregate, "slave")
+
+        self.assertIn(
+            (slave.compute_rpcapi.add_aggregate_host,
+            "CONTEXT", 98, "slave", "master", "SLAVE_INFO"),
+            slave.compute_rpcapi._mock_calls)
+
+    def test_slave_asks_master_to_remove_slave_from_pool(self):
+        slave = ResourcePoolWithStubs()
+        aggregate = Aggregate(id=98, hosts=[])
+
+        slave.remove_from_aggregate("CONTEXT", aggregate, "slave")
+
+        self.assertIn(
+            (slave.compute_rpcapi.remove_aggregate_host,
+            "CONTEXT", 98, "slave", "master", "SLAVE_INFO"),
+            slave.compute_rpcapi._mock_calls)
+
+
+class SwapXapiHostTestCase(test.TestCase):
+
+    def test_swapping(self):
+        self.assertEquals(
+            "http://otherserver:8765/somepath",
+            pool.swap_xapi_host(
+                "http://someserver:8765/somepath", 'otherserver'))
+
+    def test_no_port(self):
+        self.assertEquals(
+            "http://otherserver/somepath",
+            pool.swap_xapi_host(
+                "http://someserver/somepath", 'otherserver'))
+
+    def test_no_path(self):
+        self.assertEquals(
+            "http://otherserver",
+            pool.swap_xapi_host(
+                "http://someserver", 'otherserver'))
 
 
 class VmUtilsTestCase(test.TestCase):
@@ -2106,6 +2227,10 @@ class VmUtilsTestCase(test.TestCase):
             def call_plugin(session_self, service, command, kwargs):
                 self.kwargs = kwargs
 
+            def call_plugin_serialized(session_self, service, command, *args,
+                            **kwargs):
+                self.kwargs = kwargs
+
         def fake_dumps(thing):
             return thing
 
@@ -2120,7 +2245,7 @@ class VmUtilsTestCase(test.TestCase):
         session = FakeSession()
         vm_utils.upload_image(ctx, session, instance, "vmi uuids", "image id")
 
-        actual = self.kwargs['params']['properties']
+        actual = self.kwargs['properties']
         expected = dict(a=1, b=2, c='c', d='d',
                         auto_disk_config='auto disk config',
                         os_type='os type')
@@ -2168,18 +2293,18 @@ class XenAPILiveMigrateTestCase(stubs.XenAPITestBase):
     def test_check_can_live_migrate_destination_with_block_migration(self):
         stubs.stubout_session(self.stubs, stubs.FakeSessionForVMTests)
         self.conn = xenapi_conn.XenAPIDriver(False)
+
+        self.stubs.Set(vm_utils, "safe_find_sr", lambda _x: "asdf")
+
         expected = {'block_migration': True,
-                    'migrate_data': {'xenops': '',
-                                     'host': '',
-                                     'master': '',
-                                     'session_id': '',
-                                     'SM': ''}
+                    'migrate_data': {
+                        'migrate_send_data': "fake_migrate_data",
+                        'destination_sr_ref': 'asdf'
+                        }
                     }
-        fake_data = self.conn.check_can_live_migrate_destination(self.context,
+        result = self.conn.check_can_live_migrate_destination(self.context,
                               {'host': 'host'}, True, False)
-        self.assertEqual(expected.keys(), fake_data.keys())
-        self.assertEqual(expected['migrate_data'].keys(),
-                         fake_data['migrate_data'].keys())
+        self.assertEqual(expected, result)
 
     def test_check_can_live_migrate_destination_block_migration_fails(self):
         stubs.stubout_session(self.stubs,
@@ -2193,13 +2318,22 @@ class XenAPILiveMigrateTestCase(stubs.XenAPITestBase):
         stubs.stubout_session(self.stubs, stubs.FakeSessionForVMTests)
         self.conn = xenapi_conn.XenAPIDriver(False)
 
+        def fake_generate_vdi_map(destination_sr_ref, _vm_ref):
+            pass
+
+        self.stubs.Set(self.conn._vmops, "_generate_vdi_map",
+                       fake_generate_vdi_map)
+
         def fake_get_vm_opaque_ref(instance):
             return "fake_vm"
 
         self.stubs.Set(self.conn._vmops, "_get_vm_opaque_ref",
                        fake_get_vm_opaque_ref)
         dest_check_data = {'block_migration': True,
-                           'migrate_data': {}}
+                           'migrate_data': {
+                            'destination_sr_ref': None,
+                            'migrate_send_data': None
+                           }}
         self.assertNotRaises(None,
                              self.conn.check_can_live_migrate_source,
                              self.context,
@@ -2207,16 +2341,27 @@ class XenAPILiveMigrateTestCase(stubs.XenAPITestBase):
                              dest_check_data)
 
     def test_check_can_live_migrate_source_with_block_migrate_fails(self):
-        def fake_get_vm_opaque_ref(instance):
-            return "fake_vm"
         stubs.stubout_session(self.stubs,
                               stubs.FakeSessionForFailedMigrateTests)
         self.conn = xenapi_conn.XenAPIDriver(False)
+
+        def fake_generate_vdi_map(destination_sr_ref, _vm_ref):
+            pass
+
+        self.stubs.Set(self.conn._vmops, "_generate_vdi_map",
+                       fake_generate_vdi_map)
+
+        def fake_get_vm_opaque_ref(instance):
+            return "fake_vm"
+
         self.stubs.Set(self.conn._vmops, "_get_vm_opaque_ref",
                        fake_get_vm_opaque_ref)
 
         dest_check_data = {'block_migration': True,
-                           'migrate_data': {}}
+                           'migrate_data': {
+                            'destination_sr_ref': None,
+                            'migrate_send_data': None
+                           }}
         self.assertRaises(exception.MigrationError,
                           self.conn.check_can_live_migrate_source,
                           self.context,
@@ -2307,12 +2452,19 @@ class XenAPILiveMigrateTestCase(stubs.XenAPITestBase):
                           self.conn, None, None, None, recover_method)
         self.assertTrue(recover_method.called, "recover_method.called")
 
-    def test_live_migration_with_block_migration(self):
+    def test_live_migration_calls_post_migration(self):
         stubs.stubout_session(self.stubs, stubs.FakeSessionForVMTests)
         self.conn = xenapi_conn.XenAPIDriver(False)
 
+        def fake_generate_vdi_map(destination_sr_ref, _vm_ref):
+            pass
+
+        self.stubs.Set(self.conn._vmops, "_generate_vdi_map",
+                       fake_generate_vdi_map)
+
         def fake_get_vm_opaque_ref(instance):
             return "fake_vm"
+
         self.stubs.Set(self.conn._vmops, "_get_vm_opaque_ref",
                        fake_get_vm_opaque_ref)
 
@@ -2321,7 +2473,8 @@ class XenAPILiveMigrateTestCase(stubs.XenAPITestBase):
             post_method.called = True
 
         # pass block_migration = True and migrate data
-        migrate_data = {"test": "data"}
+        migrate_data = {"destination_sr_ref": "foo",
+                        "migrate_send_data": "bar"}
         self.conn.live_migration(self.conn, None, None, post_method, None,
                                  True, migrate_data)
         self.assertTrue(post_method.called, "post_method.called")
@@ -2354,15 +2507,81 @@ class XenAPILiveMigrateTestCase(stubs.XenAPITestBase):
         self.stubs.Set(self.conn._vmops, "_get_vm_opaque_ref",
                        fake_get_vm_opaque_ref)
 
+        def fake_generate_vdi_map(destination_sr_ref, _vm_ref):
+            pass
+        self.stubs.Set(self.conn._vmops, "_generate_vdi_map",
+                       fake_generate_vdi_map)
+
         def recover_method(context, instance, destination_hostname,
                            block_migration):
             recover_method.called = True
         # pass block_migration = True and migrate data
-        migrate_data = {"test": "data"}
+        migrate_data = dict(destination_sr_ref='foo', migrate_send_data='bar')
         self.assertRaises(exception.MigrationError,
                           self.conn.live_migration, self.conn,
                           None, None, None, recover_method, True, migrate_data)
         self.assertTrue(recover_method.called, "recover_method.called")
+
+    def test_live_migrate_block_migration_xapi_call_parameters(self):
+
+        fake_vdi_map = object()
+
+        class Session(xenapi_fake.SessionBase):
+            def VM_migrate_send(self_, session, vmref, migrate_data, islive,
+                                vdi_map, vif_map, options):
+                self.assertEquals('SOMEDATA', migrate_data)
+                self.assertEquals(fake_vdi_map, vdi_map)
+
+        stubs.stubout_session(self.stubs, Session)
+
+        conn = xenapi_conn.XenAPIDriver(False)
+
+        def fake_get_vm_opaque_ref(instance):
+            return "fake_vm"
+
+        self.stubs.Set(conn._vmops, "_get_vm_opaque_ref",
+                       fake_get_vm_opaque_ref)
+
+        def fake_generate_vdi_map(destination_sr_ref, _vm_ref):
+            return fake_vdi_map
+
+        self.stubs.Set(conn._vmops, "_generate_vdi_map",
+                       fake_generate_vdi_map)
+
+        def dummy_callback(*args, **kwargs):
+            pass
+
+        conn.live_migration(
+            self.context, instance_ref=dict(name='ignore'), dest=None,
+            post_method=dummy_callback, recover_method=dummy_callback,
+            block_migration="SOMEDATA",
+            migrate_data=dict(migrate_send_data='SOMEDATA',
+                              destination_sr_ref="TARGET_SR_OPAQUE_REF"))
+
+    def test_generate_vdi_map(self):
+        stubs.stubout_session(self.stubs, xenapi_fake.SessionBase)
+        conn = xenapi_conn.XenAPIDriver(False)
+
+        vm_ref = "fake_vm_ref"
+
+        def fake_find_sr(_session):
+            self.assertEquals(conn._session, _session)
+            return "source_sr_ref"
+        self.stubs.Set(vm_utils, "safe_find_sr", fake_find_sr)
+
+        def fake_get_instance_vdis_for_sr(_session, _vm_ref, _sr_ref):
+            self.assertEquals(conn._session, _session)
+            self.assertEquals(vm_ref, _vm_ref)
+            self.assertEquals("source_sr_ref", _sr_ref)
+            return ["vdi0", "vdi1"]
+
+        self.stubs.Set(vm_utils, "get_instance_vdis_for_sr",
+                       fake_get_instance_vdis_for_sr)
+
+        result = conn._vmops._generate_vdi_map("dest_sr_ref", vm_ref)
+
+        self.assertEquals({"vdi0": "dest_sr_ref",
+                           "vdi1": "dest_sr_ref"}, result)
 
 
 class XenAPIInjectMetadataTestCase(stubs.XenAPITestBase):
