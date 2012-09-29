@@ -1601,7 +1601,7 @@ class ComputeManager(manager.SchedulerDependentManager):
                 #       detached, or delete the bdm, just remove the
                 #       connection from this host.
                 self.remove_volume_connection(context, bdm['volume_id'],
-                                              instance)
+                                              instance, True)
 
             self.db.migration_update(context,
                                      migration_id,
@@ -1615,10 +1615,6 @@ class ComputeManager(manager.SchedulerDependentManager):
             self.compute_rpcapi.finish_resize(context, instance, migration_id,
                 image, disk_info, migration_ref['dest_compute'], reservations)
 
-            for bdm in self._get_instance_volume_bdms(context,
-                                                      instance['uuid']):
-                self.create_volume_connection(context, bdm['volume_id'],
-                                              instance)
             # Restore instance state
             current_power_state = self._get_power_state(context, instance)
             self._instance_update(context,
@@ -1670,6 +1666,11 @@ class ComputeManager(manager.SchedulerDependentManager):
                                      self._legacy_nw_info(network_info),
                                      image, resize_instance,
                                      block_device_info)
+
+        for bdm in self._get_instance_volume_bdms(context,
+                                                  instance['uuid']):
+            self.create_volume_connection(context, bdm['volume_id'],
+                                          instance)
 
         instance = self._instance_update(context,
                                          instance['uuid'],
@@ -2028,7 +2029,7 @@ class ComputeManager(manager.SchedulerDependentManager):
             'no_device': None}
         self.db.block_device_mapping_update_or_create(context, values)
 
-    def _detach_volume(self, context, instance, bdm):
+    def _detach_volume(self, context, instance, bdm, isresize=None):
         """Do the actual driver detach using block device mapping."""
         mp = bdm['device_name']
         volume_id = bdm['volume_id']
@@ -2045,8 +2046,11 @@ class ComputeManager(manager.SchedulerDependentManager):
         if connection_info and 'serial' not in connection_info:
             connection_info['serial'] = volume_id
         try:
+            name_label = instance['name']
+            if isresize:
+                name_label = name_label + '-orig'
             self.driver.detach_volume(connection_info,
-                                      instance['name'],
+                                      name_label,
                                       mp)
         except Exception:  # pylint: disable=W0702
             with excutils.save_and_reraise_exception():
@@ -2072,7 +2076,7 @@ class ComputeManager(manager.SchedulerDependentManager):
             context, instance['uuid'], volume_id)
 
     @exception.wrap_exception(notifier=notifier, publisher_id=publisher_id())
-    def remove_volume_connection(self, context, volume_id, instance):
+    def remove_volume_connection(self, context, volume_id, instance, isresize=None):
         """Remove a volume connection using the volume api"""
         # NOTE(vish): We don't want to actually mark the volume
         #             detached, or delete the bdm, just remove the
@@ -2081,7 +2085,7 @@ class ComputeManager(manager.SchedulerDependentManager):
             bdm = self._get_instance_volume_bdm(context,
                                                 instance['uuid'],
                                                 volume_id)
-            self._detach_volume(context, instance, bdm)
+            self._detach_volume(context, instance, bdm, isresize)
             volume = self.volume_api.get(context, volume_id)
             connector = self.driver.get_volume_connector(instance)
             self.volume_api.terminate_connection(context, volume, connector)
@@ -2091,7 +2095,7 @@ class ComputeManager(manager.SchedulerDependentManager):
     @exception.wrap_exception(notifier=notifier, publisher_id=publisher_id())
     def create_volume_connection(self, context, volume_id, instance):
         volume = self.volume_api.get(context, volume_id)
-        mountpoint = volume['volume_id']
+        mountpoint = volume['mountpoint']
         context = context.elevated()
         LOG.audit(_('Attaching volume %(volume_id)s to %(mountpoint)s'),
                   locals(), context=context, instance=instance)
