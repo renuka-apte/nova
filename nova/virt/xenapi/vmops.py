@@ -465,10 +465,8 @@ class VMOps(object):
                                              root_vdi['ref'],
                                              instance_type['root_gb'])
 
-            if root_vdi.get('osvol'):
-                osvol = True
             vm_utils.create_vbd(self._session, vm_ref, root_vdi['ref'],
-                                DEVICE_ROOT, bootable=True, osvol)
+                                DEVICE_ROOT, bootable=True, osvol=root_vdi.get('osvol'))
 
         # Attach (optional) swap disk
         swap_mb = instance_type['swap']
