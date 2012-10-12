@@ -430,7 +430,29 @@ def get_vdis_for_boot_from_vol(session, instance, dev_params):
     sr_uuid = dev_params['sr_uuid']
     sr_ref = volume_utils.find_sr_by_uuid(session,
                                           sr_uuid)
-    if sr_ref:
+    # Try introducing SR if it is not present
+    if not sr_ref:
+        if 'name_label' not in dev_params:
+            label = 'tempSR-%s' % dev_params['volume_id']
+        else:
+            label = dev_params['name_label']
+            del dev_params['name_label']
+
+        if 'name_description' not in dev_params:
+            desc = ''
+        else:
+            desc = dev_params['name_description']
+        sr_params = {}
+        for k in dev_params['introduce_sr_keys']:
+            sr_params[k] = dev_params[k]
+
+        sr_params['name_description'] = desc
+        sr_ref = volume_utils.introduce_sr(session, sr_uuid, label,
+                                           sr_params)
+
+    if sr_ref is None:
+        raise exception.NovaException(_('SR not present and could not be introduced'))
+    else:
         session.call_xenapi("SR.scan", sr_ref)
         return {'root': dict(uuid=dev_params['vdi_uuid'],
                 file=None, osvol=True)}
